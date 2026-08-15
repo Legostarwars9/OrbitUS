@@ -1,0 +1,7 @@
+bin/
+obj/
+.idea/
+*.user
+*.userprefs
+*.DotSettings.user
+Orbit Us.local.props
