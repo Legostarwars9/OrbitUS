@@ -42,7 +42,12 @@
         <Reference Include="System.Xml"/>
     </ItemGroup>
     <ItemGroup>
+        <Compile Include="NetworkConnection.cs" />
+        <Compile Include="NetworkManager.cs" />
+        <Compile Include="NetworkPacket.cs" />
+        <Compile Include="NetworkServer.cs" />
         <Compile Include="OrbitUs.cs" />
+        <Compile Include="PacketSerializer.cs" />
         <Compile Include="Properties\AssemblyInfo.cs"/>
     </ItemGroup>
     <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets"/>
@@ -103,5 +108,9 @@
             <HintPath>$(OrbitUsGameDir)/OrbitousLinux_Data/Managed/UnityEngine.ImageConversionModule.dll</HintPath>
             <Private>False</Private>
         </Reference>
+        <Reference Include="UnityEngine.InputLegacyModule">
+            <HintPath>$(OrbitUsGameDir)/OrbitousLinux_Data/Managed/UnityEngine.InputLegacyModule.dll</HintPath>
+        </Reference>
+        <UnityReferences Include="$(OrbitUsGameDir)/OrbitousLinux_Data/Managed/UnityEngine*.dll" />
     </ItemGroup>
 </Project>
