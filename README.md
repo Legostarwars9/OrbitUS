@@ -22,4 +22,4 @@ It is for the game Orbitous on Steam: https://store.steampowered.com/app/3830300
 Currently, only the players are synced, so all game progress is client-sided and will not be reflected on other clients. This will be changed in the future! <br><br>
 <b>Planned Features:<b> https://trello.com/b/NTNavEf7/orbitus-planned-features
 
-<br> <br> <h2><b> AI DISCLAIMER: MOST IF NOT ALL CODE IN THIS MOD IS AI-GENERATED </b></h3>
+<br><h2><b> AI DISCLAIMER: MOST IF NOT ALL CODE IN THIS MOD IS AI-GENERATED </b></h3>
