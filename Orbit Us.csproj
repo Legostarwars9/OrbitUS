@@ -120,7 +120,7 @@
     <Target Name="CopyModToBepInEx" AfterTargets="Build">
         <Copy
             SourceFiles="$(TargetPath)"
-            DestinationFolder="/home/Jacob/.steam/steam/steamapps/common/Orbitous/BepInEx/plugins/"
+            DestinationFolder="$(OrbitUsGameDir)/BepInEx/plugins/"
             />
         </Target>
 </Project>
