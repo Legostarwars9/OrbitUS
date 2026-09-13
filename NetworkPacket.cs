@@ -5,7 +5,9 @@ namespace Orbit_Us
         Connect,
         Disconnect,
         PlayerInput,
-        GameState
+        GameState,
+        KeepAlive,
+        KeepAliveResponse
     }
 
     public class NetworkPacket

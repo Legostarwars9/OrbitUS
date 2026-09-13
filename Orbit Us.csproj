@@ -46,6 +46,8 @@
         <Compile Include="NetworkManager.cs" />
         <Compile Include="NetworkPacket.cs" />
         <Compile Include="NetworkServer.cs" />
+        <Compile Include="NetworkUDPConnection.cs" />
+        <Compile Include="NetworkUDPServer.cs" />
         <Compile Include="OrbitUs.cs" />
         <Compile Include="PacketSerializer.cs" />
         <Compile Include="Properties\AssemblyInfo.cs"/>
@@ -113,4 +115,10 @@
         </Reference>
         <UnityReferences Include="$(OrbitUsGameDir)/OrbitousLinux_Data/Managed/UnityEngine*.dll" />
     </ItemGroup>
+    <Target Name="CopyModToBepInEx" AfterTargets="Build">
+        <Copy
+            SourceFiles="$(TargetPath)"
+            DestinationFolder="/home/Jacob/.steam/steam/steamapps/common/Orbitous/BepInEx/plugins/"
+            />
+        </Target>
 </Project>
