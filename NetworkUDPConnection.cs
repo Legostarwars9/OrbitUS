@@ -158,9 +158,9 @@ namespace Orbit_Us
                             result.Buffer
                         );
 
-                    Console.WriteLine(
-                        $"UDP packet received: {packet.Type}"
-                    );
+                    //Console.WriteLine(
+                    //    $"UDP packet received: {packet.Type}"
+                    //);
 
                     if (packet.Type ==
                         PacketType.PlayerConnected)

@@ -17,11 +17,18 @@ namespace Orbit_Us
         private readonly Dictionary<int, GameObject> arrows =
             new Dictionary<int, GameObject>();
 
-        private readonly Dictionary<int, Text> distanceTexts =
-            new Dictionary<int, Text>();
-
         private readonly Dictionary<int, GameObject> players =
             new Dictionary<int, GameObject>();
+
+        private readonly Dictionary<int, Text> distanceLabels =
+            new Dictionary<int, Text>();
+
+        private Text distanceList;
+
+        private const float ArrowSize = 50f;
+
+        private const float DistanceListX = 1800f;
+        private const float DistanceListY = 900f;
 
         public PlayerTracker(
             NetworkUDPConnection connection,
@@ -33,8 +40,7 @@ namespace Orbit_Us
 
         public void Initialize()
         {
-            connection.OnPacketReceived +=
-                HandlePacket;
+            connection.OnPacketReceived += HandlePacket;
 
             localPlayerId =
                 connection.LocalPlayerId;
@@ -43,6 +49,21 @@ namespace Orbit_Us
 
             Debug.Log(
                 "[Orbit-Us] Player tracker initialized."
+            );
+        }
+
+        private Color GetPlayerColor(int playerId)
+        {
+            System.Random random =
+                new System.Random(playerId);
+
+            float hue =
+                (float)random.NextDouble();
+
+            return Color.HSVToRGB(
+                hue,
+                0.75f,
+                1f
             );
         }
 
@@ -59,9 +80,68 @@ namespace Orbit_Us
             canvas.renderMode =
                 RenderMode.ScreenSpaceOverlay;
 
-            canvasObject.AddComponent<CanvasScaler>();
+            CanvasScaler scaler =
+                canvasObject.AddComponent<CanvasScaler>();
+
+            scaler.uiScaleMode =
+                CanvasScaler.ScaleMode.ConstantPixelSize;
+
+            scaler.scaleFactor = 1f;
 
             canvasObject.AddComponent<GraphicRaycaster>();
+
+            GameObject distanceObject =
+                new GameObject(
+                    "OrbitUs_DistanceList"
+                );
+
+            distanceObject.transform.SetParent(
+                canvas.transform,
+                false
+            );
+
+            distanceList =
+                distanceObject.AddComponent<Text>();
+
+            distanceList.font =
+                Resources.GetBuiltinResource<Font>(
+                    "Arial.ttf"
+                );
+
+            distanceList.fontSize = 14;
+
+            distanceList.alignment =
+                TextAnchor.LowerLeft;
+
+            distanceList.horizontalOverflow =
+                HorizontalWrapMode.Overflow;
+
+            distanceList.verticalOverflow =
+                VerticalWrapMode.Overflow;
+
+            RectTransform distanceTransform =
+                distanceObject.GetComponent<RectTransform>();
+
+            distanceTransform.anchorMin =
+                new Vector2(0f, 0f);
+
+            distanceTransform.anchorMax =
+                new Vector2(0f, 0f);
+
+            distanceTransform.pivot =
+                new Vector2(0f, 0f);
+
+            distanceTransform.anchoredPosition =
+                new Vector2(
+                    DistanceListX,
+                    DistanceListY
+                );
+
+            distanceTransform.sizeDelta =
+                new Vector2(
+                    250f,
+                    150f
+                );
         }
 
         private void HandlePacket(
@@ -113,18 +193,13 @@ namespace Orbit_Us
                     connection.LocalPlayerId;
 
                 if (localPlayerId == -1)
-                {
-                    localPlayerId =
-                        playerId;
-                }
+                    localPlayerId = playerId;
             }
 
             if (playerId == localPlayerId)
                 return;
 
-            CreateArrow(
-                playerId
-            );
+            CreatePlayer(playerId);
         }
 
         private void HandlePlayerDisconnected(
@@ -139,9 +214,10 @@ namespace Orbit_Us
                     0
                 );
 
-            RemovePlayer(
-                playerId
-            );
+            RemovePlayer(playerId);
+
+            RepositionPlayers();
+            UpdateDistanceList();
         }
 
         private void HandlePlayerTransform(
@@ -156,21 +232,16 @@ namespace Orbit_Us
                 );
 
             if (localPlayerId == -1)
-            {
                 localPlayerId =
                     connection.LocalPlayerId;
-            }
 
-            if (transform.PlayerId ==
-                localPlayerId)
-            {
+            if (transform.PlayerId == localPlayerId)
                 return;
-            }
 
             if (!players.ContainsKey(
                     transform.PlayerId))
             {
-                CreateArrow(
+                CreatePlayer(
                     transform.PlayerId
                 );
             }
@@ -191,17 +262,14 @@ namespace Orbit_Us
                 );
         }
 
-        private void CreateArrow(
+        private void CreatePlayer(
             int playerId)
         {
             if (playerId == localPlayerId)
                 return;
 
-            if (arrows.ContainsKey(
-                    playerId))
-            {
+            if (players.ContainsKey(playerId))
                 return;
-            }
 
             if (arrowSprite == null)
             {
@@ -212,6 +280,29 @@ namespace Orbit_Us
                 return;
             }
 
+            GameObject player =
+                new GameObject(
+                    $"OrbitUs_TrackedPlayer_{playerId}"
+                );
+
+            players.Add(
+                playerId,
+                player
+            );
+
+            CreateArrow(playerId);
+
+            RepositionPlayers();
+            UpdateDistanceList();
+
+            Debug.Log(
+                $"[Orbit-Us] Created tracker for player {playerId}"
+            );
+        }
+
+        private void CreateArrow(
+            int playerId)
+        {
             GameObject arrowObject =
                 new GameObject(
                     $"OrbitUs_Arrow_{playerId}"
@@ -228,83 +319,80 @@ namespace Orbit_Us
             arrowImage.sprite =
                 arrowSprite;
 
-            arrowImage.preserveAspect =
-                true;
+            arrowImage.preserveAspect = true;
+
+            arrowImage.color =
+                GetPlayerColor(playerId);
 
             RectTransform arrowTransform =
                 arrowObject.GetComponent<RectTransform>();
 
             arrowTransform.sizeDelta =
                 new Vector2(
-                    50f,
-                    50f
+                    ArrowSize,
+                    ArrowSize
                 );
 
-            GameObject textObject =
-                new GameObject(
-                    $"OrbitUs_Distance_{playerId}"
-                );
-
-            textObject.transform.SetParent(
-                arrowObject.transform,
-                false
-            );
-
-            Text distanceText =
-                textObject.AddComponent<Text>();
-
-            distanceText.text =
-                "0m";
-
-            distanceText.font =
-                Resources.GetBuiltinResource<Font>(
-                    "Arial.ttf"
-                );
-
-            distanceText.alignment =
-                TextAnchor.MiddleCenter;
-
-            distanceText.fontSize =
-                14;
-
-            RectTransform textTransform =
-                textObject.GetComponent<RectTransform>();
-
-            textTransform.sizeDelta =
+            arrowTransform.anchorMin =
                 new Vector2(
-                    150f,
-                    30f
+                    0.5f,
+                    0.5f
                 );
 
-            textTransform.anchoredPosition =
+            arrowTransform.anchorMax =
                 new Vector2(
-                    0f,
-                    -35f
+                    0.5f,
+                    0.5f
                 );
+
+            arrowTransform.pivot =
+                new Vector2(
+                    0.5f,
+                    0.5f
+                );
+
+            arrowTransform.anchoredPosition =
+                Vector2.zero;
 
             arrows.Add(
                 playerId,
                 arrowObject
             );
+        }
 
-            distanceTexts.Add(
-                playerId,
-                distanceText
-            );
+        private void RepositionPlayers()
+        {
+            foreach (
+                GameObject arrow
+                in arrows.Values)
+            {
+                if (arrow == null)
+                    continue;
 
-            GameObject remotePlayer =
-                new GameObject(
-                    $"OrbitUs_TrackedPlayer_{playerId}"
-                );
+                RectTransform arrowTransform =
+                    arrow.GetComponent<RectTransform>();
 
-            players.Add(
-                playerId,
-                remotePlayer
-            );
+                arrowTransform.anchorMin =
+                    new Vector2(
+                        0.5f,
+                        0.5f
+                    );
 
-            Debug.Log(
-                $"[Orbit-Us] Created tracker for player {playerId}"
-            );
+                arrowTransform.anchorMax =
+                    new Vector2(
+                        0.5f,
+                        0.5f
+                    );
+
+                arrowTransform.pivot =
+                    new Vector2(
+                        0.5f,
+                        -1f
+                    );
+
+                arrowTransform.anchoredPosition =
+                    Vector2.zero;
+            }
         }
 
         private void RemovePlayer(
@@ -321,14 +409,8 @@ namespace Orbit_Us
                     );
                 }
 
-                arrows.Remove(
-                    playerId
-                );
+                arrows.Remove(playerId);
             }
-
-            distanceTexts.Remove(
-                playerId
-            );
 
             if (players.TryGetValue(
                     playerId,
@@ -341,21 +423,154 @@ namespace Orbit_Us
                     );
                 }
 
-                players.Remove(
-                    playerId
+                players.Remove(playerId);
+            }
+
+            if (distanceLabels.TryGetValue(
+                    playerId,
+                    out Text label))
+            {
+                if (label != null)
+                {
+                    UnityEngine.Object.Destroy(
+                        label.gameObject
+                    );
+                }
+
+                distanceLabels.Remove(playerId);
+            }
+        }
+
+        private void UpdateDistanceList()
+        {
+            if (distanceList == null)
+                return;
+
+            playerController localPlayer =
+                UnityEngine.Object.FindObjectOfType<
+                    playerController
+                >();
+
+            if (localPlayer == null)
+                return;
+
+            foreach (Text label in distanceLabels.Values)
+            {
+                if (label != null)
+                {
+                    UnityEngine.Object.Destroy(
+                        label.gameObject
+                    );
+                }
+            }
+
+            distanceLabels.Clear();
+
+            List<int> playerIds =
+                new List<int>(
+                    players.Keys
+                );
+
+            playerIds.Sort();
+
+            foreach (int playerId in playerIds)
+            {
+                GameObject remotePlayer =
+                    players[playerId];
+
+                if (remotePlayer == null)
+                    continue;
+
+                float distance =
+                    Vector2.Distance(
+                        localPlayer.transform.position,
+                        remotePlayer.transform.position
+                    );
+
+                GameObject labelObject =
+                    new GameObject(
+                        $"OrbitUs_Distance_{playerId}"
+                    );
+
+                labelObject.transform.SetParent(
+                    distanceList.transform,
+                    false
+                );
+
+                Text label =
+                    labelObject.AddComponent<Text>();
+
+                label.font =
+                    Resources.GetBuiltinResource<Font>(
+                        "Arial.ttf"
+                    );
+
+                label.fontSize = 14;
+
+                label.alignment =
+                    TextAnchor.MiddleLeft;
+
+                label.horizontalOverflow =
+                    HorizontalWrapMode.Overflow;
+
+                label.verticalOverflow =
+                    VerticalWrapMode.Overflow;
+
+                label.color =
+                    GetPlayerColor(playerId);
+
+                if (distance < 1000f)
+                {
+                    label.text =
+                        $"Player {playerId}: " +
+                        distance.ToString("0") +
+                        "m";
+                }
+                else
+                {
+                    label.text =
+                        $"Player {playerId}: " +
+                        (distance / 1000f)
+                            .ToString("0.0") +
+                        "km";
+                }
+
+                RectTransform labelTransform =
+                    labelObject.GetComponent<RectTransform>();
+
+                labelTransform.anchorMin =
+                    new Vector2(0f, 1f);
+
+                labelTransform.anchorMax =
+                    new Vector2(0f, 1f);
+
+                labelTransform.pivot =
+                    new Vector2(0f, 1f);
+
+                labelTransform.sizeDelta =
+                    new Vector2(
+                        250f,
+                        20f
+                    );
+
+                labelTransform.anchoredPosition =
+                    new Vector2(
+                        0f,
+                        -playerIds.IndexOf(playerId) * 20f
+                    );
+
+                distanceLabels.Add(
+                    playerId,
+                    label
                 );
             }
+
+            distanceList.text = "";
         }
 
         public void Update()
         {
             if (canvas == null)
-                return;
-
-            Camera cam =
-                Camera.main;
-
-            if (cam == null)
                 return;
 
             playerController localPlayer =
@@ -382,11 +597,8 @@ namespace Orbit_Us
                 if (remotePlayer == null)
                     continue;
 
-                if (!arrows.ContainsKey(
-                        playerId))
-                {
+                if (!arrows.ContainsKey(playerId))
                     continue;
-                }
 
                 GameObject arrow =
                     arrows[playerId];
@@ -410,12 +622,6 @@ namespace Orbit_Us
                         difference.y
                     ).normalized;
 
-                Vector2 screenCenter =
-                    new Vector2(
-                        Screen.width / 2f,
-                        Screen.height / 2f
-                    );
-
                 float angle =
                     Mathf.Atan2(
                         direction.y,
@@ -426,36 +632,15 @@ namespace Orbit_Us
                 RectTransform arrowTransform =
                     arrow.GetComponent<RectTransform>();
 
-                arrowTransform.position =
-                    screenCenter;
-
                 arrowTransform.rotation =
                     Quaternion.Euler(
                         0f,
                         0f,
                         angle - 90f
                     );
-
-                Text distanceText =
-                    distanceTexts[playerId];
-
-                if (distanceText != null)
-                {
-                    if (distance < 1000f)
-                    {
-                        distanceText.text =
-                            distance.ToString("0") +
-                            "m";
-                    }
-                    else
-                    {
-                        distanceText.text =
-                            (distance / 1000f)
-                            .ToString("0.0") +
-                            "km";
-                    }
-                }
             }
+
+            UpdateDistanceList();
         }
 
         public void Destroy()
@@ -490,9 +675,21 @@ namespace Orbit_Us
                 }
             }
 
+            foreach (
+                Text label
+                in distanceLabels.Values)
+            {
+                if (label != null)
+                {
+                    UnityEngine.Object.Destroy(
+                        label.gameObject
+                    );
+                }
+            }
+
             arrows.Clear();
-            distanceTexts.Clear();
             players.Clear();
+            distanceLabels.Clear();
 
             if (canvas != null)
             {
@@ -503,6 +700,7 @@ namespace Orbit_Us
                 canvas = null;
             }
 
+            distanceList = null;
             localPlayerId = -1;
         }
     }
