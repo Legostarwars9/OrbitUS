@@ -9,7 +9,7 @@ namespace Orbit_Us
     using System;
     using System.Threading.Tasks;
 
-    [BepInPlugin("Orbit-Us.test", "Orbit-Us", "0.0.6")]
+    [BepInPlugin("Orbit-Us.test", "Orbit-Us", "0.1.1")]
     public class OrbitUs : BaseUnityPlugin
     {
         private NetworkServer networkServer;
