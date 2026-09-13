@@ -9,15 +9,23 @@ namespace Orbit_Us
     using System;
     using System.Threading.Tasks;
 
-    [BepInPlugin("Orbit-Us.test", "Orbit-Us", "0.0.6")]
+    [BepInPlugin("Orbit-Us.test", "Orbit-Us", "0.0.7")]
     public class OrbitUs : BaseUnityPlugin
     {
         private NetworkServer networkServer;
         private NetworkManager networkManager;
 
+        private NetworkUDPServer networkUDPServer;
+        private NetworkUDPConnection networkUDPConnection;
+
+        private PlayerReplicator playerReplicator;
+
+        private Sprite playerSprite;
+
         private void Awake()
         {
             Application.runInBackground = true;
+
             Logger.LogInfo("Orbit Us Loaded");
 
             LoadAssets();
@@ -25,6 +33,9 @@ namespace Orbit_Us
 
             networkManager = new NetworkManager();
             networkServer = new NetworkServer();
+
+            networkUDPServer = new NetworkUDPServer();
+            networkUDPConnection = new NetworkUDPConnection();
 
             networkServer.OnClientConnected += ClientConnected;
         }
@@ -82,6 +93,27 @@ namespace Orbit_Us
                 Logger.LogInfo(
                     "KeepAlive monitoring started."
                 );
+
+                networkUDPConnection.Connect(
+                    "jacob-bazzite.tail1da60c.ts.net",
+                    7778
+                );
+
+                Logger.LogInfo(
+                    "UDP connection established."
+                );
+
+                playerReplicator =
+                    new PlayerReplicator(
+                        networkUDPConnection,
+                        playerSprite
+                    );
+
+                playerReplicator.Initialize();
+
+                Logger.LogInfo(
+                    "Player replication started."
+                );
             }
             catch (Exception ex)
             {
@@ -89,7 +121,40 @@ namespace Orbit_Us
                     $"Connection failed: {ex.Message}"
                 );
 
+                networkUDPConnection?.Disconnect();
                 networkManager.Disconnect();
+            }
+        }
+        private void StartHostReplication()
+        {
+            try
+            {
+                networkUDPConnection.Connect(
+                    "127.0.0.1",
+                    7778
+                );
+
+                Logger.LogInfo(
+                    "Host UDP connection established."
+                );
+
+                playerReplicator =
+                    new PlayerReplicator(
+                        networkUDPConnection,
+                        playerSprite
+                    );
+
+                playerReplicator.Initialize();
+
+                Logger.LogInfo(
+                    "Host player replication started."
+                );
+            }
+            catch (Exception ex)
+            {
+                Logger.LogError(
+                    $"Host UDP connection failed: {ex.Message}"
+                );
             }
         }
 
@@ -98,6 +163,7 @@ namespace Orbit_Us
             if (Input.GetKeyDown(KeyCode.F6))
             {
                 networkServer.Stop();
+                networkUDPServer.Stop();
 
                 Logger.LogInfo(
                     "Network server stopped."
@@ -109,7 +175,14 @@ namespace Orbit_Us
                     "Network Server Started on port 7777"
                 );
 
+                networkUDPServer.Start(7778);
+
+                Logger.LogInfo(
+                    "UDP Server Started on port 7778"
+                );
+
                 _ = AcceptClient();
+                StartHostReplication();
             }
 
             if (Input.GetKeyDown(KeyCode.F7))
@@ -129,15 +202,24 @@ namespace Orbit_Us
                     );
                 }
             }
+
+            playerReplicator?.Update();
         }
 
         private void OnDestroy()
         {
+            playerReplicator?.Destroy();
+
             networkManager?.Disconnect();
+
+            networkUDPConnection?.Disconnect();
+
             networkServer?.Stop();
+
+            networkUDPServer?.Stop();
         }
 
-        void LoadAssets()
+        private void LoadAssets()
         {
             string modPath =
                 Path.GetDirectoryName(Info.Location);
@@ -162,7 +244,7 @@ namespace Orbit_Us
             }
         }
 
-        void LoadImage()
+        private void LoadImage()
         {
             string modPath =
                 Path.GetDirectoryName(Info.Location);
@@ -191,65 +273,28 @@ namespace Orbit_Us
 
             tex.LoadImage(data);
 
-            Sprite sprite =
-                Sprite.Create(
-                    tex,
-                    new Rect(
-                        0,
-                        0,
-                        tex.width,
-                        tex.height
-                    ),
-                    new Vector2(
-                        0.5f,
-                        0.5f
-                    )
-                );
+            playerSprite = Sprite.Create(
+                tex,
+                new Rect(
+                    0,
+                    0,
+                    tex.width,
+                    tex.height
+                ),
+                new Vector2(
+                    0.5f,
+                    0.5f
+                )
+            );
 
             Logger.LogInfo(
                 $"Sprite loaded at: {imagePath}"
             );
 
             Logger.LogInfo(
-                $"Sprite loaded with dimensions: {tex.width}x{tex.height}"
+                $"Sprite loaded with dimensions: " +
+                $"{tex.width}x{tex.height}"
             );
-
-            GameObject canvasObject =
-                new GameObject("OrbitUsCanvas");
-
-            Canvas canvas =
-                canvasObject.AddComponent<Canvas>();
-
-            canvas.renderMode =
-                RenderMode.ScreenSpaceOverlay;
-
-            GameObject imageObject =
-                new GameObject("OrbitUsTestImage");
-
-            imageObject.transform.SetParent(
-                canvasObject.transform,
-                false
-            );
-
-            Image image =
-                imageObject.AddComponent<Image>();
-
-            image.sprite = sprite;
-
-            RectTransform rectTransform =
-                imageObject.GetComponent<RectTransform>();
-
-            rectTransform.sizeDelta =
-                new Vector2(
-                    tex.width/2,
-                    tex.height/2
-                );
-
-            rectTransform.anchoredPosition =
-                new Vector2(
-                    10,
-                    10
-                );
         }
     }
 }

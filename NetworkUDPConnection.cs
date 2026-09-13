@@ -1,6 +1,5 @@
 using System;
 using System.Net.Sockets;
-using System.Text;
 using System.Threading.Tasks;
 
 namespace Orbit_Us
@@ -8,57 +7,165 @@ namespace Orbit_Us
     public class NetworkUDPConnection
     {
         private UdpClient udpClient;
+        private bool connected;
 
-        public async Task<string> SendTestPacket(
+        private string serverAddress;
+        private int serverPort;
+
+        public int LocalPlayerId { get; private set; } = -1;
+
+        public event Action<NetworkPacket> OnPacketReceived;
+
+        public void Connect(
             string address,
             int port)
         {
-            udpClient?.Close();
+            Disconnect();
+
+            serverAddress = address;
+            serverPort = port;
 
             udpClient = new UdpClient();
 
-            Console.WriteLine(
-                $"Sending UDP packet to {address}:{port}"
-            );
-
-            string message =
-                $"UDP test: {DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}";
-
-            byte[] data =
-                Encoding.UTF8.GetBytes(message);
-
-            await udpClient.SendAsync(
-                data,
-                data.Length,
+            udpClient.Connect(
                 address,
                 port
             );
 
-            Console.WriteLine(
-                $"UDP packet sent: {message}"
-            );
-
-            UdpReceiveResult result =
-                await udpClient.ReceiveAsync();
-
-            string response =
-                Encoding.UTF8.GetString(
-                    result.Buffer
-                );
+            connected = true;
 
             Console.WriteLine(
-                $"Received UDP response from {result.RemoteEndPoint}"
+                $"UDP connected to {address}:{port}"
+            );
+
+            _ = ReceiveLoop();
+
+            _ = SendPlayerConnect();
+        }
+
+        private async Task SendPlayerConnect()
+        {
+            if (!connected)
+                return;
+
+            NetworkPacket packet =
+                new NetworkPacket
+                {
+                    Type =
+                        PacketType.PlayerConnect,
+
+                    Data =
+                        new byte[0]
+                };
+
+            byte[] data =
+                PacketSerializer.Serialize(packet);
+
+            await udpClient.SendAsync(
+                data,
+                data.Length
             );
 
             Console.WriteLine(
-                $"UDP response data: {response}"
+                "Sent UDP PlayerConnect."
             );
+        }
 
-            return response;
+        public async Task SendPlayerTransform(
+            float x,
+            float y,
+            float rotation)
+        {
+            if (!connected)
+                return;
+
+            if (LocalPlayerId == -1)
+                return;
+
+            PlayerTransformData transform =
+                new PlayerTransformData
+                {
+                    PlayerId = LocalPlayerId,
+                    X = x,
+                    Y = y,
+                    Rotation = rotation
+                };
+
+            NetworkPacket packet =
+                new NetworkPacket
+                {
+                    Type =
+                        PacketType.PlayerTransform,
+
+                    Data =
+                        transform.Serialize()
+                };
+
+            byte[] data =
+                PacketSerializer.Serialize(packet);
+
+            await udpClient.SendAsync(
+                data,
+                data.Length
+            );
+        }
+
+        private async Task ReceiveLoop()
+        {
+            try
+            {
+                while (connected)
+                {
+                    UdpReceiveResult result =
+                        await udpClient.ReceiveAsync();
+
+                    NetworkPacket packet =
+                        PacketSerializer.Deserialize(
+                            result.Buffer
+                        );
+
+                    if (packet.Type ==
+                        PacketType.PlayerConnected)
+                    {
+                        if (packet.Data.Length >= 4)
+                        {
+                            int playerId =
+                                BitConverter.ToInt32(
+                                    packet.Data,
+                                    0
+                                );
+
+                            if (LocalPlayerId == -1)
+                            {
+                                LocalPlayerId = playerId;
+
+                                Console.WriteLine(
+                                    $"Assigned local player ID: {LocalPlayerId}"
+                                );
+                            }
+                        }
+                    }
+
+                    OnPacketReceived?.Invoke(packet);
+                }
+            }
+            catch (Exception ex)
+            {
+                if (connected)
+                {
+                    Console.WriteLine(
+                        $"UDP connection lost: {ex.Message}"
+                    );
+                }
+            }
         }
 
         public void Disconnect()
         {
+            connected = false;
+
+            LocalPlayerId = -1;
+
             try
             {
                 udpClient?.Close();

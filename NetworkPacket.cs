@@ -3,11 +3,13 @@ namespace Orbit_Us
     public enum PacketType
     {
         Connect,
-        Disconnect,
-        PlayerInput,
+        PlayerConnect,
+        PlayerDisconnected,
+        PlayerTransform,
         GameState,
         KeepAlive,
-        KeepAliveResponse
+        KeepAliveResponse,
+        PlayerConnected
     }
 
     public class NetworkPacket

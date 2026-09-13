@@ -50,6 +50,8 @@
         <Compile Include="NetworkUDPServer.cs" />
         <Compile Include="OrbitUs.cs" />
         <Compile Include="PacketSerializer.cs" />
+        <Compile Include="PlayerReplicator.cs" />
+        <Compile Include="PlayerTransformData.cs" />
         <Compile Include="Properties\AssemblyInfo.cs"/>
     </ItemGroup>
     <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets"/>
