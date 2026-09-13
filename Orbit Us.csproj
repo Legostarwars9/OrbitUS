@@ -51,6 +51,7 @@
         <Compile Include="OrbitUs.cs" />
         <Compile Include="PacketSerializer.cs" />
         <Compile Include="PlayerReplicator.cs" />
+        <Compile Include="PlayerTracker.cs" />
         <Compile Include="PlayerTransformData.cs" />
         <Compile Include="Properties\AssemblyInfo.cs"/>
     </ItemGroup>
@@ -114,6 +115,9 @@
         </Reference>
         <Reference Include="UnityEngine.InputLegacyModule">
             <HintPath>$(OrbitUsGameDir)/OrbitousLinux_Data/Managed/UnityEngine.InputLegacyModule.dll</HintPath>
+        </Reference>
+        <Reference Include="UnityEngine.TextRenderingModule">
+            <HintPath>$(OrbitUsGameDir)/OrbitousLinux_Data/Managed/UnityEngine.TextRenderingModule.dll</HintPath>
         </Reference>
         <UnityReferences Include="$(OrbitUsGameDir)/OrbitousLinux_Data/Managed/UnityEngine*.dll" />
     </ItemGroup>

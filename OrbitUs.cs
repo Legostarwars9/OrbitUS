@@ -19,8 +19,10 @@ namespace Orbit_Us
         private NetworkUDPConnection networkUDPConnection;
 
         private PlayerReplicator playerReplicator;
+        private PlayerTracker playerTracker;
 
         private Sprite playerSprite;
+        private Sprite arrowSprite;
 
         private bool udpConnected;
 
@@ -44,6 +46,7 @@ namespace Orbit_Us
 
             LoadAssets();
             LoadImage();
+            LoadArrowImage();
 
             networkManager =
                 new NetworkManager();
@@ -199,10 +202,22 @@ namespace Orbit_Us
 
                 playerReplicator.Initialize();
 
+                playerTracker =
+                    new PlayerTracker(
+                        networkUDPConnection,
+                        arrowSprite
+                    );
+
+                playerTracker.Initialize();
+
                 udpConnected = true;
 
                 Logger.LogInfo(
                     "UDP player replication started."
+                );
+
+                Logger.LogInfo(
+                    "Player tracker started."
                 );
             }
             catch (Exception ex)
@@ -235,6 +250,10 @@ namespace Orbit_Us
             Logger.LogInfo(
                 "Restarting network servers..."
             );
+
+            playerTracker?.Destroy();
+
+            playerTracker = null;
 
             playerReplicator?.Destroy();
 
@@ -293,10 +312,22 @@ namespace Orbit_Us
 
                 playerReplicator.Initialize();
 
+                playerTracker =
+                    new PlayerTracker(
+                        networkUDPConnection,
+                        arrowSprite
+                    );
+
+                playerTracker.Initialize();
+
                 udpConnected = true;
 
                 Logger.LogInfo(
                     "Host UDP player replication started."
+                );
+
+                Logger.LogInfo(
+                    "Host player tracker started."
                 );
             }
             catch (Exception ex)
@@ -350,6 +381,11 @@ namespace Orbit_Us
             if (playerReplicator != null)
             {
                 playerReplicator.Update();
+            }
+
+            if (playerTracker != null)
+            {
+                playerTracker.Update();
             }
 
             transformSendTimer +=
@@ -410,6 +446,8 @@ namespace Orbit_Us
 
         private void OnDestroy()
         {
+            playerTracker?.Destroy();
+
             playerReplicator?.Destroy();
 
             networkManager?.Disconnect();
@@ -512,6 +550,73 @@ namespace Orbit_Us
 
             Logger.LogInfo(
                 $"Sprite loaded with dimensions: {tex.width}x{tex.height}"
+            );
+        }
+
+        private void LoadArrowImage()
+        {
+            string modPath =
+                Path.GetDirectoryName(
+                    Info.Location
+                );
+
+            string imagePath =
+                Path.Combine(
+                    modPath,
+                    "Orbit_Us-Assets",
+                    "arrow.png"
+                );
+
+            if (!File.Exists(imagePath))
+            {
+                Logger.LogWarning(
+                    "arrow.png Not Found"
+                );
+
+                return;
+            }
+
+            byte[] data =
+                File.ReadAllBytes(
+                    imagePath
+                );
+
+            Texture2D tex =
+                new Texture2D(
+                    2,
+                    2
+                );
+
+            if (!tex.LoadImage(data))
+            {
+                Logger.LogError(
+                    "Failed to load arrow.png"
+                );
+
+                return;
+            }
+
+            arrowSprite =
+                Sprite.Create(
+                    tex,
+                    new Rect(
+                        0,
+                        0,
+                        tex.width,
+                        tex.height
+                    ),
+                    new Vector2(
+                        0.5f,
+                        0.5f
+                    )
+                );
+
+            Logger.LogInfo(
+                $"Arrow sprite loaded at: {imagePath}"
+            );
+
+            Logger.LogInfo(
+                $"Arrow sprite loaded with dimensions: {tex.width}x{tex.height}"
             );
         }
     }
