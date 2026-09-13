@@ -348,7 +348,7 @@ namespace Orbit_Us
             arrowTransform.pivot =
                 new Vector2(
                     0.5f,
-                    -1f
+                    -10f
                 );
 
             arrowTransform.anchoredPosition =
