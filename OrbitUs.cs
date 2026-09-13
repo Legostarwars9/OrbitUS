@@ -1,6 +1,7 @@
 namespace Orbit_Us
 {
     using BepInEx;
+    using BepInEx.Configuration;
     using System.IO;
     using UnityEngine;
     using System.Net.Sockets;
@@ -8,7 +9,7 @@ namespace Orbit_Us
     using System;
     using System.Threading.Tasks;
 
-    [BepInPlugin("Orbit-Us.test", "Orbit-Us", "0.1.0")]
+    [BepInPlugin("Orbit-Us.test", "Orbit-Us", "0.0.6")]
     public class OrbitUs : BaseUnityPlugin
     {
         private NetworkServer networkServer;
@@ -27,11 +28,9 @@ namespace Orbit_Us
 
         private const float TransformSendRate = 0.05f;
 
-        private const string ServerAddress =
-            "jacob-bazzite.tail1da60c.ts.net";
-
-        private const int TcpPort = 7777;
-        private const int UdpPort = 7778;
+        private ConfigEntry<string> serverAddress;
+        private ConfigEntry<int> tcpPort;
+        private ConfigEntry<int> udpPort;
 
         private void Awake()
         {
@@ -40,6 +39,8 @@ namespace Orbit_Us
             Logger.LogInfo(
                 "Orbit Us Loaded"
             );
+
+            LoadConfig();
 
             LoadAssets();
             LoadImage();
@@ -58,6 +59,45 @@ namespace Orbit_Us
 
             networkServer.OnClientConnected +=
                 ClientConnected;
+        }
+
+        private void LoadConfig()
+        {
+            serverAddress =
+                Config.Bind(
+                    "Network",
+                    "ServerAddress",
+                    "[Put IP address Here]",
+                    "Tailscale DNS name or IP address of the server."
+                );
+
+            tcpPort =
+                Config.Bind(
+                    "Network",
+                    "TCPPort",
+                    7777,
+                    "TCP server port."
+                );
+
+            udpPort =
+                Config.Bind(
+                    "Network",
+                    "UDPPort",
+                    7778,
+                    "UDP server port."
+                );
+
+            Logger.LogInfo(
+                $"Server Address: {serverAddress.Value}"
+            );
+
+            Logger.LogInfo(
+                $"TCP Port: {tcpPort.Value}"
+            );
+
+            Logger.LogInfo(
+                $"UDP Port: {udpPort.Value}"
+            );
         }
 
         private void ClientConnected(
@@ -92,8 +132,8 @@ namespace Orbit_Us
             {
                 NetworkPacket packet =
                     await networkManager.Connect(
-                        ServerAddress,
-                        TcpPort
+                        serverAddress.Value,
+                        tcpPort.Value
                     );
 
                 Logger.LogInfo(
@@ -143,12 +183,12 @@ namespace Orbit_Us
             try
             {
                 Logger.LogInfo(
-                    $"Connecting UDP to {ServerAddress}:{UdpPort}..."
+                    $"Connecting UDP to {serverAddress.Value}:{udpPort.Value}..."
                 );
 
                 networkUDPConnection.Connect(
-                    ServerAddress,
-                    UdpPort
+                    serverAddress.Value,
+                    udpPort.Value
                 );
 
                 playerReplicator =
@@ -196,46 +236,44 @@ namespace Orbit_Us
                 "Restarting network servers..."
             );
 
-            // Clean up the previous host/player connection
             playerReplicator?.Destroy();
+
             playerReplicator = null;
 
             networkManager.Disconnect();
+
             networkUDPConnection.Disconnect();
 
             networkServer.Stop();
+
             networkUDPServer.Stop();
 
             udpConnected = false;
+
             transformSendTimer = 0f;
 
             Logger.LogInfo(
                 "Network servers stopped."
             );
 
-            // Start TCP server
             networkServer.Start(
-                TcpPort
+                tcpPort.Value
             );
 
             Logger.LogInfo(
-                $"TCP Server Started on port {TcpPort}"
+                $"TCP Server Started on port {tcpPort.Value}"
             );
 
             _ = AcceptClient();
 
-            // Start UDP server
             networkUDPServer.Start(
-                UdpPort
+                udpPort.Value
             );
 
             Logger.LogInfo(
-                $"UDP Server Started on port {UdpPort}"
+                $"UDP Server Started on port {udpPort.Value}"
             );
 
-            // The host is also a UDP client.
-            // Use localhost because the UDP server is
-            // running on this same machine.
             Logger.LogInfo(
                 "Connecting host to local UDP server..."
             );
@@ -244,7 +282,7 @@ namespace Orbit_Us
             {
                 networkUDPConnection.Connect(
                     "127.0.0.1",
-                    UdpPort
+                    udpPort.Value
                 );
 
                 playerReplicator =
