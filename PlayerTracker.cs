@@ -25,7 +25,7 @@ namespace Orbit_Us
 
         private Text distanceList;
 
-        private const float ArrowSize = 50f;
+        private const float ArrowSize = 15f;
 
         private const float DistanceListX = 1800f;
         private const float DistanceListY = 900f;
@@ -348,7 +348,7 @@ namespace Orbit_Us
             arrowTransform.pivot =
                 new Vector2(
                     0.5f,
-                    0.5f
+                    -1f
                 );
 
             arrowTransform.anchoredPosition =
