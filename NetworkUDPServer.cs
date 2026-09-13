@@ -44,18 +44,18 @@ namespace Orbit_Us
                     IPEndPoint sender =
                         result.RemoteEndPoint;
 
-                    Console.WriteLine(
-                        $"UDP packet received from {sender.Address}:{sender.Port}"
-                    );
+                    //Console.WriteLine(
+                    //    $"UDP packet received from {sender.Address}:{sender.Port}"
+                    //);
 
                     NetworkPacket packet =
                         PacketSerializer.Deserialize(
                             result.Buffer
                         );
 
-                    Console.WriteLine(
-                        $"UDP packet type: {packet.Type}"
-                    );
+                    //Console.WriteLine(
+                    //    $"UDP packet type: {packet.Type}"
+                    //);
 
                     if (packet.Type ==
                         PacketType.PlayerConnect)
@@ -102,9 +102,9 @@ namespace Orbit_Us
                                 outgoingPacket
                             );
 
-                        Console.WriteLine(
-                            $"Broadcasting transform from player {playerId}"
-                        );
+                        //Console.WriteLine(
+                        //    $"Broadcasting transform from player {playerId}"
+                        //);
 
                         await Broadcast(
                             data,
