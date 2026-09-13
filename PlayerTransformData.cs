@@ -28,7 +28,7 @@ namespace Orbit_Us
             using (MemoryStream stream = new MemoryStream(data))
             using (BinaryReader reader = new BinaryReader(stream))
             {
-                return new PlayerTransformData
+                return new PlayerTransformData 
                 {
                     PlayerId = reader.ReadInt32(),
                     X = reader.ReadSingle(),

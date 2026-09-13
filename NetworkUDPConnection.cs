@@ -1,4 +1,5 @@
 using System;
+using System.Net;
 using System.Net.Sockets;
 using System.Threading.Tasks;
 
@@ -25,7 +26,8 @@ namespace Orbit_Us
             serverAddress = address;
             serverPort = port;
 
-            udpClient = new UdpClient();
+            udpClient =
+                new UdpClient(0);
 
             udpClient.Connect(
                 address,
@@ -34,8 +36,16 @@ namespace Orbit_Us
 
             connected = true;
 
+            IPEndPoint localEndpoint =
+                (IPEndPoint)
+                udpClient.Client.LocalEndPoint;
+
             Console.WriteLine(
                 $"UDP connected to {address}:{port}"
+            );
+
+            Console.WriteLine(
+                $"UDP local endpoint: {localEndpoint.Address}:{localEndpoint.Port}"
             );
 
             _ = ReceiveLoop();
@@ -45,30 +55,41 @@ namespace Orbit_Us
 
         private async Task SendPlayerConnect()
         {
-            if (!connected)
-                return;
+            try
+            {
+                if (!connected)
+                    return;
 
-            NetworkPacket packet =
-                new NetworkPacket
-                {
-                    Type =
-                        PacketType.PlayerConnect,
+                NetworkPacket packet =
+                    new NetworkPacket
+                    {
+                        Type =
+                            PacketType.PlayerConnect,
 
-                    Data =
-                        new byte[0]
-                };
+                        Data =
+                            new byte[0]
+                    };
 
-            byte[] data =
-                PacketSerializer.Serialize(packet);
+                byte[] data =
+                    PacketSerializer.Serialize(
+                        packet
+                    );
 
-            await udpClient.SendAsync(
-                data,
-                data.Length
-            );
+                await udpClient.SendAsync(
+                    data,
+                    data.Length
+                );
 
-            Console.WriteLine(
-                "Sent UDP PlayerConnect."
-            );
+                Console.WriteLine(
+                    "Sent UDP PlayerConnect."
+                );
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine(
+                    $"UDP PlayerConnect failed: {ex.Message}"
+                );
+            }
         }
 
         public async Task SendPlayerTransform(
@@ -82,32 +103,45 @@ namespace Orbit_Us
             if (LocalPlayerId == -1)
                 return;
 
-            PlayerTransformData transform =
-                new PlayerTransformData
-                {
-                    PlayerId = LocalPlayerId,
-                    X = x,
-                    Y = y,
-                    Rotation = rotation
-                };
+            try
+            {
+                PlayerTransformData transform =
+                    new PlayerTransformData
+                    {
+                        PlayerId =
+                            LocalPlayerId,
 
-            NetworkPacket packet =
-                new NetworkPacket
-                {
-                    Type =
-                        PacketType.PlayerTransform,
+                        X = x,
+                        Y = y,
+                        Rotation = rotation
+                    };
 
-                    Data =
-                        transform.Serialize()
-                };
+                NetworkPacket packet =
+                    new NetworkPacket
+                    {
+                        Type =
+                            PacketType.PlayerTransform,
 
-            byte[] data =
-                PacketSerializer.Serialize(packet);
+                        Data =
+                            transform.Serialize()
+                    };
 
-            await udpClient.SendAsync(
-                data,
-                data.Length
-            );
+                byte[] data =
+                    PacketSerializer.Serialize(
+                        packet
+                    );
+
+                await udpClient.SendAsync(
+                    data,
+                    data.Length
+                );
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine(
+                    $"UDP transform send failed: {ex.Message}"
+                );
+            }
         }
 
         private async Task ReceiveLoop()
@@ -124,6 +158,10 @@ namespace Orbit_Us
                             result.Buffer
                         );
 
+                    Console.WriteLine(
+                        $"UDP packet received: {packet.Type}"
+                    );
+
                     if (packet.Type ==
                         PacketType.PlayerConnected)
                     {
@@ -137,16 +175,25 @@ namespace Orbit_Us
 
                             if (LocalPlayerId == -1)
                             {
-                                LocalPlayerId = playerId;
+                                LocalPlayerId =
+                                    playerId;
 
                                 Console.WriteLine(
                                     $"Assigned local player ID: {LocalPlayerId}"
                                 );
                             }
+                            else
+                            {
+                                Console.WriteLine(
+                                    $"Player connected: {playerId}"
+                                );
+                            }
                         }
                     }
 
-                    OnPacketReceived?.Invoke(packet);
+                    OnPacketReceived?.Invoke(
+                        packet
+                    );
                 }
             }
             catch (Exception ex)

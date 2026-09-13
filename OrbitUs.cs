@@ -3,13 +3,12 @@ namespace Orbit_Us
     using BepInEx;
     using System.IO;
     using UnityEngine;
-    using UnityEngine.UI;
     using System.Net.Sockets;
     using System.Text;
     using System;
     using System.Threading.Tasks;
 
-    [BepInPlugin("Orbit-Us.test", "Orbit-Us", "0.0.7")]
+    [BepInPlugin("Orbit-Us.test", "Orbit-Us", "0.0.6")]
     public class OrbitUs : BaseUnityPlugin
     {
         private NetworkServer networkServer;
@@ -22,27 +21,51 @@ namespace Orbit_Us
 
         private Sprite playerSprite;
 
+        private bool udpConnected;
+
+        private float transformSendTimer;
+
+        private const float TransformSendRate = 0.05f;
+
+        private const string ServerAddress =
+            "jacob-bazzite.tail1da60c.ts.net";
+
+        private const int TcpPort = 7777;
+        private const int UdpPort = 7778;
+
         private void Awake()
         {
             Application.runInBackground = true;
 
-            Logger.LogInfo("Orbit Us Loaded");
+            Logger.LogInfo(
+                "Orbit Us Loaded"
+            );
 
             LoadAssets();
             LoadImage();
 
-            networkManager = new NetworkManager();
-            networkServer = new NetworkServer();
+            networkManager =
+                new NetworkManager();
 
-            networkUDPServer = new NetworkUDPServer();
-            networkUDPConnection = new NetworkUDPConnection();
+            networkServer =
+                new NetworkServer();
 
-            networkServer.OnClientConnected += ClientConnected;
+            networkUDPServer =
+                new NetworkUDPServer();
+
+            networkUDPConnection =
+                new NetworkUDPConnection();
+
+            networkServer.OnClientConnected +=
+                ClientConnected;
         }
 
-        private void ClientConnected(TcpClient client)
+        private void ClientConnected(
+            TcpClient client)
         {
-            Logger.LogInfo("Client connected!");
+            Logger.LogInfo(
+                "TCP client connected!"
+            );
         }
 
         private async Task AcceptClient()
@@ -52,7 +75,7 @@ namespace Orbit_Us
                 await networkServer.AcceptConnection();
 
                 Logger.LogInfo(
-                    "Finished handling client connection."
+                    "Finished handling TCP client connection."
                 );
             }
             catch (Exception ex)
@@ -69,12 +92,12 @@ namespace Orbit_Us
             {
                 NetworkPacket packet =
                     await networkManager.Connect(
-                        "jacob-bazzite.tail1da60c.ts.net",
-                        7777
+                        ServerAddress,
+                        TcpPort
                     );
 
                 Logger.LogInfo(
-                    "Connected to server!"
+                    "TCP connected to server!"
                 );
 
                 Logger.LogInfo(
@@ -82,7 +105,9 @@ namespace Orbit_Us
                 );
 
                 string message =
-                    Encoding.UTF8.GetString(packet.Data);
+                    Encoding.UTF8.GetString(
+                        packet.Data
+                    );
 
                 Logger.LogInfo(
                     $"Packet data: {message}"
@@ -93,49 +118,37 @@ namespace Orbit_Us
                 Logger.LogInfo(
                     "KeepAlive monitoring started."
                 );
-
-                networkUDPConnection.Connect(
-                    "jacob-bazzite.tail1da60c.ts.net",
-                    7778
-                );
-
-                Logger.LogInfo(
-                    "UDP connection established."
-                );
-
-                playerReplicator =
-                    new PlayerReplicator(
-                        networkUDPConnection,
-                        playerSprite
-                    );
-
-                playerReplicator.Initialize();
-
-                Logger.LogInfo(
-                    "Player replication started."
-                );
             }
             catch (Exception ex)
             {
                 Logger.LogError(
-                    $"Connection failed: {ex.Message}"
+                    $"TCP connection failed: {ex.Message}"
                 );
 
-                networkUDPConnection?.Disconnect();
                 networkManager.Disconnect();
             }
         }
-        private void StartHostReplication()
+
+        private void StartUDPClient()
         {
-            try
+            if (udpConnected)
             {
-                networkUDPConnection.Connect(
-                    "127.0.0.1",
-                    7778
+                Logger.LogInfo(
+                    "UDP client already connected."
                 );
 
+                return;
+            }
+
+            try
+            {
                 Logger.LogInfo(
-                    "Host UDP connection established."
+                    $"Connecting UDP to {ServerAddress}:{UdpPort}..."
+                );
+
+                networkUDPConnection.Connect(
+                    ServerAddress,
+                    UdpPort
                 );
 
                 playerReplicator =
@@ -146,15 +159,19 @@ namespace Orbit_Us
 
                 playerReplicator.Initialize();
 
+                udpConnected = true;
+
                 Logger.LogInfo(
-                    "Host player replication started."
+                    "UDP player replication started."
                 );
             }
             catch (Exception ex)
             {
                 Logger.LogError(
-                    $"Host UDP connection failed: {ex.Message}"
+                    $"UDP connection failed: {ex.Message}"
                 );
+
+                udpConnected = false;
             }
         }
 
@@ -162,48 +179,195 @@ namespace Orbit_Us
         {
             if (Input.GetKeyDown(KeyCode.F6))
             {
-                networkServer.Stop();
-                networkUDPServer.Stop();
-
-                Logger.LogInfo(
-                    "Network server stopped."
-                );
-
-                networkServer.Start(7777);
-
-                Logger.LogInfo(
-                    "Network Server Started on port 7777"
-                );
-
-                networkUDPServer.Start(7778);
-
-                Logger.LogInfo(
-                    "UDP Server Started on port 7778"
-                );
-
-                _ = AcceptClient();
-                StartHostReplication();
+                RestartServers();
             }
 
             if (Input.GetKeyDown(KeyCode.F7))
             {
-                if (!networkManager.IsConnected)
-                {
-                    Logger.LogInfo(
-                        "Connecting to server..."
-                    );
-
-                    TestConnection();
-                }
-                else
-                {
-                    Logger.LogInfo(
-                        "Already connected to server."
-                    );
-                }
+                ConnectToServer();
             }
 
-            playerReplicator?.Update();
+            UpdatePlayerReplication();
+        }
+
+        private void RestartServers()
+        {
+            Logger.LogInfo(
+                "Restarting network servers..."
+            );
+
+            // Clean up the previous host/player connection
+            playerReplicator?.Destroy();
+            playerReplicator = null;
+
+            networkManager.Disconnect();
+            networkUDPConnection.Disconnect();
+
+            networkServer.Stop();
+            networkUDPServer.Stop();
+
+            udpConnected = false;
+            transformSendTimer = 0f;
+
+            Logger.LogInfo(
+                "Network servers stopped."
+            );
+
+            // Start TCP server
+            networkServer.Start(
+                TcpPort
+            );
+
+            Logger.LogInfo(
+                $"TCP Server Started on port {TcpPort}"
+            );
+
+            _ = AcceptClient();
+
+            // Start UDP server
+            networkUDPServer.Start(
+                UdpPort
+            );
+
+            Logger.LogInfo(
+                $"UDP Server Started on port {UdpPort}"
+            );
+
+            // The host is also a UDP client.
+            // Use localhost because the UDP server is
+            // running on this same machine.
+            Logger.LogInfo(
+                "Connecting host to local UDP server..."
+            );
+
+            try
+            {
+                networkUDPConnection.Connect(
+                    "127.0.0.1",
+                    UdpPort
+                );
+
+                playerReplicator =
+                    new PlayerReplicator(
+                        networkUDPConnection,
+                        playerSprite
+                    );
+
+                playerReplicator.Initialize();
+
+                udpConnected = true;
+
+                Logger.LogInfo(
+                    "Host UDP player replication started."
+                );
+            }
+            catch (Exception ex)
+            {
+                Logger.LogError(
+                    $"Host UDP connection failed: {ex.Message}"
+                );
+
+                udpConnected = false;
+            }
+        }
+
+        private void ConnectToServer()
+        {
+            if (!networkManager.IsConnected)
+            {
+                Logger.LogInfo(
+                    "Connecting TCP to server..."
+                );
+
+                TestConnection();
+            }
+            else
+            {
+                Logger.LogInfo(
+                    "Already connected to TCP server."
+                );
+            }
+
+            if (!udpConnected)
+            {
+                Logger.LogInfo(
+                    "Connecting UDP to server..."
+                );
+
+                StartUDPClient();
+            }
+            else
+            {
+                Logger.LogInfo(
+                    "Already connected to UDP server."
+                );
+            }
+        }
+
+        private void UpdatePlayerReplication()
+        {
+            if (!udpConnected)
+                return;
+
+            if (playerReplicator != null)
+            {
+                playerReplicator.Update();
+            }
+
+            transformSendTimer +=
+                Time.deltaTime;
+
+            if (transformSendTimer <
+                TransformSendRate)
+            {
+                return;
+            }
+
+            transformSendTimer = 0f;
+
+            SendLocalPlayerTransform();
+        }
+
+        private async void SendLocalPlayerTransform()
+        {
+            try
+            {
+                if (!udpConnected)
+                    return;
+
+                playerController localPlayer =
+                    UnityEngine.Object.FindObjectOfType<
+                        playerController
+                    >();
+
+                if (localPlayer == null)
+                    return;
+
+                Transform playerTransform =
+                    localPlayer.transform;
+
+                float x =
+                    playerTransform.position.x;
+
+                float y =
+                    playerTransform.position.y;
+
+                float rotation =
+                    playerTransform.eulerAngles.z;
+
+                await networkUDPConnection
+                    .SendPlayerTransform(
+                        x,
+                        y,
+                        rotation
+                    );
+            }
+            catch (Exception ex)
+            {
+                Logger.LogError(
+                    $"Failed to send player transform: {ex.Message}"
+                );
+            }
         }
 
         private void OnDestroy()
@@ -212,9 +376,9 @@ namespace Orbit_Us
 
             networkManager?.Disconnect();
 
-            networkUDPConnection?.Disconnect();
-
             networkServer?.Stop();
+
+            networkUDPConnection?.Disconnect();
 
             networkUDPServer?.Stop();
         }
@@ -222,7 +386,9 @@ namespace Orbit_Us
         private void LoadAssets()
         {
             string modPath =
-                Path.GetDirectoryName(Info.Location);
+                Path.GetDirectoryName(
+                    Info.Location
+                );
 
             string assetPath =
                 Path.Combine(
@@ -247,7 +413,9 @@ namespace Orbit_Us
         private void LoadImage()
         {
             string modPath =
-                Path.GetDirectoryName(Info.Location);
+                Path.GetDirectoryName(
+                    Info.Location
+                );
 
             string imagePath =
                 Path.Combine(
@@ -266,34 +434,46 @@ namespace Orbit_Us
             }
 
             byte[] data =
-                File.ReadAllBytes(imagePath);
+                File.ReadAllBytes(
+                    imagePath
+                );
 
             Texture2D tex =
-                new Texture2D(2, 2);
+                new Texture2D(
+                    2,
+                    2
+                );
 
-            tex.LoadImage(data);
+            if (!tex.LoadImage(data))
+            {
+                Logger.LogError(
+                    "Failed to load Fing.png"
+                );
 
-            playerSprite = Sprite.Create(
-                tex,
-                new Rect(
-                    0,
-                    0,
-                    tex.width,
-                    tex.height
-                ),
-                new Vector2(
-                    0.5f,
-                    0.5f
-                )
-            );
+                return;
+            }
+
+            playerSprite =
+                Sprite.Create(
+                    tex,
+                    new Rect(
+                        0,
+                        0,
+                        tex.width,
+                        tex.height
+                    ),
+                    new Vector2(
+                        0.5f,
+                        0.5f
+                    )
+                );
 
             Logger.LogInfo(
                 $"Sprite loaded at: {imagePath}"
             );
 
             Logger.LogInfo(
-                $"Sprite loaded with dimensions: " +
-                $"{tex.width}x{tex.height}"
+                $"Sprite loaded with dimensions: {tex.width}x{tex.height}"
             );
         }
     }

@@ -11,14 +11,16 @@ namespace Orbit_Us
 
         private int localPlayerId = -1;
 
-        private Dictionary<int, GameObject> remotePlayers =
+        private readonly Dictionary<int, GameObject> remotePlayers =
             new Dictionary<int, GameObject>();
 
-        private Dictionary<int, Vector3> targetPositions =
+        private readonly Dictionary<int, Vector3> targetPositions =
             new Dictionary<int, Vector3>();
 
-        private Dictionary<int, float> targetRotations =
+        private readonly Dictionary<int, float> targetRotations =
             new Dictionary<int, float>();
+
+        private const float InterpolationSpeed = 15f;
 
         public PlayerReplicator(
             NetworkUDPConnection connection,
@@ -32,8 +34,11 @@ namespace Orbit_Us
         {
             connection.OnPacketReceived += HandlePacket;
 
+            localPlayerId =
+                connection.LocalPlayerId;
+
             Debug.Log(
-                "[Orbit-Us] Player replication initialized."
+                $"[Orbit-Us] Player replication initialized. Local ID: {localPlayerId}"
             );
         }
 
@@ -68,41 +73,56 @@ namespace Orbit_Us
         private void HandlePlayerConnected(
             NetworkPacket packet)
         {
-            if (packet.Data.Length < 4)
+            if (packet.Data == null ||
+                packet.Data.Length < 4)
+            {
                 return;
+            }
 
             int playerId =
                 BitConverter.ToInt32(
                     packet.Data,
                     0
                 );
+
+            if (localPlayerId == -1)
+            {
+                localPlayerId =
+                    connection.LocalPlayerId;
+
+                if (localPlayerId == -1)
+                {
+                    localPlayerId =
+                        playerId;
+                }
+
+                Debug.Log(
+                    $"[Orbit-Us] Local player ID: {localPlayerId}"
+                );
+            }
 
             Debug.Log(
                 $"[Orbit-Us] Player connected: {playerId}"
             );
 
-            if (localPlayerId == -1)
+            if (playerId == localPlayerId)
             {
-                localPlayerId = playerId;
-
-                Debug.Log(
-                    $"[Orbit-Us] Local player ID: {localPlayerId}"
-                );
-
                 return;
             }
 
-            if (playerId == localPlayerId)
-                return;
-
-            CreateRemotePlayer(playerId);
+            CreateRemotePlayer(
+                playerId
+            );
         }
 
         private void HandlePlayerDisconnected(
             NetworkPacket packet)
         {
-            if (packet.Data.Length < 4)
+            if (packet.Data == null ||
+                packet.Data.Length < 4)
+            {
                 return;
+            }
 
             int playerId =
                 BitConverter.ToInt32(
@@ -110,22 +130,36 @@ namespace Orbit_Us
                     0
                 );
 
-            RemoveRemotePlayer(playerId);
+            RemoveRemotePlayer(
+                playerId
+            );
         }
 
         private void HandlePlayerTransform(
             NetworkPacket packet)
         {
+            if (packet.Data == null)
+                return;
+
+            if (packet.Data.Length < 16)
+                return;
+
             PlayerTransformData transform =
                 PlayerTransformData.Deserialize(
                     packet.Data
                 );
 
             if (localPlayerId == -1)
-                return;
+            {
+                localPlayerId =
+                    connection.LocalPlayerId;
+            }
 
-            if (transform.PlayerId == localPlayerId)
+            if (transform.PlayerId ==
+                localPlayerId)
+            {
                 return;
+            }
 
             if (!remotePlayers.ContainsKey(
                     transform.PlayerId))
@@ -153,8 +187,14 @@ namespace Orbit_Us
         private void CreateRemotePlayer(
             int playerId)
         {
-            if (remotePlayers.ContainsKey(playerId))
+            if (playerId == localPlayerId)
                 return;
+
+            if (remotePlayers.ContainsKey(
+                    playerId))
+            {
+                return;
+            }
 
             GameObject remotePlayer =
                 new GameObject(
@@ -164,7 +204,8 @@ namespace Orbit_Us
             SpriteRenderer renderer =
                 remotePlayer.AddComponent<SpriteRenderer>();
 
-            renderer.sprite = playerSprite;
+            renderer.sprite =
+                playerSprite;
 
             remotePlayer.transform.localScale =
                 Vector3.one;
@@ -229,24 +270,52 @@ namespace Orbit_Us
                 KeyValuePair<int, GameObject> pair
                 in remotePlayers)
             {
-                int playerId = pair.Key;
-                GameObject player = pair.Value;
+                int playerId =
+                    pair.Key;
+
+                GameObject player =
+                    pair.Value;
 
                 if (player == null)
                     continue;
 
                 if (!targetPositions.ContainsKey(
                         playerId))
+                {
                     continue;
+                }
+
+                Vector3 targetPosition =
+                    targetPositions[
+                        playerId
+                    ];
+
+                float targetRotation =
+                    targetRotations[
+                        playerId
+                    ];
 
                 player.transform.position =
-                    targetPositions[playerId];
+                    Vector3.Lerp(
+                        player.transform.position,
+                        targetPosition,
+                        InterpolationSpeed *
+                        Time.deltaTime
+                    );
 
-                player.transform.rotation =
+                Quaternion targetQuaternion =
                     Quaternion.Euler(
                         0f,
                         0f,
-                        targetRotations[playerId]
+                        targetRotation
+                    );
+
+                player.transform.rotation =
+                    Quaternion.Lerp(
+                        player.transform.rotation,
+                        targetQuaternion,
+                        InterpolationSpeed *
+                        Time.deltaTime
                     );
             }
         }
@@ -274,6 +343,8 @@ namespace Orbit_Us
             remotePlayers.Clear();
             targetPositions.Clear();
             targetRotations.Clear();
+
+            localPlayerId = -1;
         }
     }
 }

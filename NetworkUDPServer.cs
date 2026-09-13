@@ -20,6 +20,8 @@ namespace Orbit_Us
         {
             Stop();
 
+            nextPlayerId = 1;
+
             udpServer = new UdpClient(port);
             running = true;
 
@@ -42,10 +44,18 @@ namespace Orbit_Us
                     IPEndPoint sender =
                         result.RemoteEndPoint;
 
+                    Console.WriteLine(
+                        $"UDP packet received from {sender.Address}:{sender.Port}"
+                    );
+
                     NetworkPacket packet =
                         PacketSerializer.Deserialize(
                             result.Buffer
                         );
+
+                    Console.WriteLine(
+                        $"UDP packet type: {packet.Type}"
+                    );
 
                     if (packet.Type ==
                         PacketType.PlayerConnect)
@@ -57,7 +67,7 @@ namespace Orbit_Us
                     if (!clients.ContainsKey(sender))
                     {
                         Console.WriteLine(
-                            "Received UDP packet from unknown client."
+                            $"UDP packet from unknown client: {sender.Address}:{sender.Port}"
                         );
 
                         continue;
@@ -71,8 +81,11 @@ namespace Orbit_Us
                                 packet.Data
                             );
 
-                        transform.PlayerId =
+                        int playerId =
                             clients[sender];
+
+                        transform.PlayerId =
+                            playerId;
 
                         NetworkPacket outgoingPacket =
                             new NetworkPacket
@@ -88,6 +101,10 @@ namespace Orbit_Us
                             PacketSerializer.Serialize(
                                 outgoingPacket
                             );
+
+                        Console.WriteLine(
+                            $"Broadcasting transform from player {playerId}"
+                        );
 
                         await Broadcast(
                             data,
@@ -110,38 +127,24 @@ namespace Orbit_Us
         private async Task HandlePlayerConnect(
             IPEndPoint sender)
         {
-            if (clients.ContainsKey(sender))
+            if (clients.TryGetValue(
+                    sender,
+                    out int existingId))
             {
-                int existingId =
-                    clients[sender];
+                Console.WriteLine(
+                    $"UDP player {existingId} already connected."
+                );
 
-                NetworkPacket existingPacket =
-                    new NetworkPacket
-                    {
-                        Type =
-                            PacketType.PlayerConnected,
-
-                        Data =
-                            BitConverter.GetBytes(
-                                existingId
-                            )
-                    };
-
-                byte[] existingData =
-                    PacketSerializer.Serialize(
-                        existingPacket
-                    );
-
-                await udpServer.SendAsync(
-                    existingData,
-                    existingData.Length,
+                await SendPlayerConnected(
+                    existingId,
                     sender
                 );
 
                 return;
             }
 
-            int playerId = nextPlayerId++;
+            int playerId =
+                nextPlayerId++;
 
             clients.Add(
                 sender,
@@ -149,9 +152,61 @@ namespace Orbit_Us
             );
 
             Console.WriteLine(
-                $"UDP player connected: {playerId}"
+                $"UDP player connected: {playerId} from {sender.Address}:{sender.Port}"
             );
 
+            Console.WriteLine(
+                $"Current UDP players: {clients.Count}"
+            );
+
+            // Tell the new player their own ID.
+            await SendPlayerConnected(
+                playerId,
+                sender
+            );
+
+            // Tell the new player about every player
+            // that was already connected.
+            foreach (
+                KeyValuePair<IPEndPoint, int> client
+                in clients)
+            {
+                if (client.Key.Equals(sender))
+                    continue;
+
+                Console.WriteLine(
+                    $"Telling player {playerId} about player {client.Value}"
+                );
+
+                await SendPlayerConnected(
+                    client.Value,
+                    sender
+                );
+            }
+
+            // Tell every existing player about the new player.
+            foreach (
+                IPEndPoint client
+                in new List<IPEndPoint>(clients.Keys))
+            {
+                if (client.Equals(sender))
+                    continue;
+
+                Console.WriteLine(
+                    $"Telling existing player at {client.Address}:{client.Port} about player {playerId}"
+                );
+
+                await SendPlayerConnected(
+                    playerId,
+                    client
+                );
+            }
+        }
+
+        private async Task SendPlayerConnected(
+            int playerId,
+            IPEndPoint destination)
+        {
             NetworkPacket packet =
                 new NetworkPacket
                 {
@@ -165,12 +220,28 @@ namespace Orbit_Us
                 };
 
             byte[] data =
-                PacketSerializer.Serialize(packet);
+                PacketSerializer.Serialize(
+                    packet
+                );
 
-            await Broadcast(
-                data,
-                null
-            );
+            try
+            {
+                await udpServer.SendAsync(
+                    data,
+                    data.Length,
+                    destination
+                );
+
+                Console.WriteLine(
+                    $"Sent PlayerConnected({playerId}) to {destination.Address}:{destination.Port}"
+                );
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine(
+                    $"Failed sending PlayerConnected to {destination}: {ex.Message}"
+                );
+            }
         }
 
         private async Task Broadcast(
@@ -195,9 +266,11 @@ namespace Orbit_Us
                         client
                     );
                 }
-                catch
+                catch (Exception ex)
                 {
-                    clients.Remove(client);
+                    Console.WriteLine(
+                        $"Failed sending UDP packet to {client}: {ex.Message}"
+                    );
                 }
             }
         }
