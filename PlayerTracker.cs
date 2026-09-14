@@ -55,7 +55,7 @@ namespace Orbit_Us
         private Color GetPlayerColor(int playerId)
         {
             System.Random random =
-                new System.Random(playerId);
+                new System.Random(playerId * 5023);
 
             float hue =
                 (float)random.NextDouble();
