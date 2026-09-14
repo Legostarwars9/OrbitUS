@@ -41,7 +41,10 @@ namespace Orbit_Us
             Logger.LogInfo(
                 "Orbit Us Loaded"
             );
+            GameObject dumpObject =
+                new GameObject("OrbitUs_EnemyPrefabDump");
 
+            dumpObject.AddComponent<EnemyPrefabDump>();
             LoadConfig();
 
             LoadAssets();
