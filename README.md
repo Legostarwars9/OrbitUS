@@ -15,7 +15,7 @@ It is for the game Orbitous on Steam: https://store.steampowered.com/app/3830300
 <h3><b>2. Install the mod</b></h3>
    To install the mod, download the latest release .zip and extract it to "C:\Program Files (x86)\Steam\steamapps\common\Orbitous\BepInEx\plugins" (Or OS equivalent)<br><img width="561" height="138" alt="Screenshot_20260912_232339" src="https://github.com/user-attachments/assets/39201ebe-7616-4cd3-92a0-57e801f99758" /> 
 <h3><b>3. Install a reverse proxy program/VPN like Tailscale</b></h3>
-   Currently, the mod has NO NAT traversal, so unless you have a public IP address and can port forward, you need to use a mesh VPN like Tailscale or a reverse proxy program like Playit.gg with premium <br> <br>
+   Currently, the mod has NO NAT traversal or P2P Matchmaking, so unless you have a public IP address and can port forward, you need to use a mesh VPN like Tailscale or a reverse proxy program like Playit.gg with premium <br> <br>
    By default the mod uses port 7777 for TCP Connections and port 7778 for UDP Connections, these, along with the IP address/Domain are changeable in "C:\Program Files (x86)\Steam\steamapps\common\Orbitous\BepInEx\config\Orbit-US.cfg" <br><br>
 
 <h3><b>4. Start Playing</b></h3>
