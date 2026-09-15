@@ -43,6 +43,9 @@
     </ItemGroup>
     <ItemGroup>
         <Compile Include="EnemyPrefabDump.cs" />
+        <Compile Include="EnemyReplicator.cs" />
+        <Compile Include="EnemySpawnPatch.cs" />
+        <Compile Include="EnemyTransformData.cs" />
         <Compile Include="NetworkConnection.cs" />
         <Compile Include="NetworkManager.cs" />
         <Compile Include="NetworkPacket.cs" />
@@ -70,8 +73,8 @@
             <Private>False</Private>
         </Reference>
 
-        <Reference Include="BepInEx.Harmony">
-            <HintPath>$(OrbitUsGameDir)/BepInEx/core/BepInEx.Harmony.dll</HintPath>
+        <Reference Include="0Harmony">
+            <HintPath>$(OrbitUsGameDir)/BepInEx/core/0Harmony.dll</HintPath>
             <Private>False</Private>
         </Reference>
 
@@ -119,6 +122,12 @@
         </Reference>
         <Reference Include="UnityEngine.TextRenderingModule">
             <HintPath>$(OrbitUsGameDir)/OrbitousLinux_Data/Managed/UnityEngine.TextRenderingModule.dll</HintPath>
+        </Reference>
+        <Reference Include="UnityEngine.Physics2DModule">
+            <HintPath>$(OrbitUsGameDir)/OrbitousLinux_Data/Managed/UnityEngine.Physics2DModule.dll</HintPath>
+        </Reference>
+        <Reference Include="UnityEngine.IMGUIModule">
+            <HintPath>$(OrbitUsGameDir)/OrbitousLinux_Data/Managed/UnityEngine.IMGUIModule.dll</HintPath>
         </Reference>
         <UnityReferences Include="$(OrbitUsGameDir)/OrbitousLinux_Data/Managed/UnityEngine*.dll" />
     </ItemGroup>

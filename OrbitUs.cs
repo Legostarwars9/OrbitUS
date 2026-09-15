@@ -8,8 +8,9 @@ namespace Orbit_Us
     using System.Text;
     using System;
     using System.Threading.Tasks;
+    using HarmonyLib;
 
-    [BepInPlugin("Orbit-Us.test", "Orbit-Us", "0.2.0")]
+    [BepInPlugin("Orbit-Us.test", "Orbit-Us", "0.2.1")]
     public class OrbitUs : BaseUnityPlugin
     {
         private NetworkServer networkServer;
@@ -20,6 +21,7 @@ namespace Orbit_Us
 
         private PlayerReplicator playerReplicator;
         private PlayerTracker playerTracker;
+        private EnemyReplicator enemyReplicator;
 
         private Sprite playerSprite;
         private Sprite arrowSprite;
@@ -33,11 +35,16 @@ namespace Orbit_Us
         private ConfigEntry<string> serverAddress;
         private ConfigEntry<int> tcpPort;
         private ConfigEntry<int> udpPort;
+        internal static bool MultiplayerActive { get; private set; }
+        internal static bool IsHost { get; private set; }
+
+        private Harmony harmony;
 
         private void Awake()
         {
             Application.runInBackground = true;
-
+            harmony = new Harmony("Orbit-Us.enemy-spawn-control");
+            harmony.PatchAll();
             Logger.LogInfo(
                 "Orbit Us Loaded"
             );
@@ -46,7 +53,7 @@ namespace Orbit_Us
 
             dumpObject.AddComponent<EnemyPrefabDump>();
             LoadConfig();
-
+            
             LoadAssets();
             LoadImage();
             LoadArrowImage();
@@ -185,7 +192,8 @@ namespace Orbit_Us
 
                 return;
             }
-
+            MultiplayerActive = true;
+            IsHost = false;
             try
             {
                 Logger.LogInfo(
@@ -202,6 +210,13 @@ namespace Orbit_Us
                         networkUDPConnection,
                         playerSprite
                     );
+                enemyReplicator =
+                    new EnemyReplicator(
+                        networkUDPConnection,
+                        false
+                    );
+
+                enemyReplicator.Initialize();
 
                 playerReplicator.Initialize();
 
@@ -250,6 +265,8 @@ namespace Orbit_Us
 
         private void RestartServers()
         {
+            MultiplayerActive = true;
+            IsHost = true;
             Logger.LogInfo(
                 "Restarting network servers..."
             );
@@ -261,6 +278,10 @@ namespace Orbit_Us
             playerReplicator?.Destroy();
 
             playerReplicator = null;
+            
+            enemyReplicator?.Destroy();
+
+            enemyReplicator = null;
 
             networkManager.Disconnect();
 
@@ -312,7 +333,14 @@ namespace Orbit_Us
                         networkUDPConnection,
                         playerSprite
                     );
+                enemyReplicator =
+                    new EnemyReplicator(
+                        networkUDPConnection,
+                        true
+                    );
 
+                enemyReplicator.Initialize();
+                
                 playerReplicator.Initialize();
 
                 playerTracker =
@@ -342,6 +370,7 @@ namespace Orbit_Us
                 udpConnected = false;
             }
         }
+        
 
         private void ConnectToServer()
         {
@@ -385,10 +414,15 @@ namespace Orbit_Us
             {
                 playerReplicator.Update();
             }
+            
 
             if (playerTracker != null)
             {
                 playerTracker.Update();
+            }
+            if (enemyReplicator != null)
+            {
+                enemyReplicator.Update();
             }
 
             transformSendTimer +=
@@ -460,6 +494,11 @@ namespace Orbit_Us
             networkUDPConnection?.Disconnect();
 
             networkUDPServer?.Stop();
+            if (harmony != null)
+            {
+                harmony.UnpatchSelf();
+                harmony = null;
+            }
         }
 
         private void LoadAssets()

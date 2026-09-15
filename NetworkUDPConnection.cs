@@ -2,6 +2,7 @@ using System;
 using System.Net;
 using System.Net.Sockets;
 using System.Threading.Tasks;
+using System.Collections.Generic;
 
 namespace Orbit_Us
 {
@@ -51,6 +52,57 @@ namespace Orbit_Us
             _ = ReceiveLoop();
 
             _ = SendPlayerConnect();
+        }
+        public async Task SendEnemySnapshot(
+            List<EnemyTransformData> enemies)
+        {
+            if (!connected)
+                return;
+
+            try
+            {
+                using (System.IO.MemoryStream stream =
+                       new System.IO.MemoryStream())
+                using (System.IO.BinaryWriter writer =
+                       new System.IO.BinaryWriter(stream))
+                {
+                    writer.Write(enemies.Count);
+
+                    foreach (EnemyTransformData enemy
+                             in enemies)
+                    {
+                        byte[] data =
+                            enemy.Serialize();
+
+                        writer.Write(data.Length);
+                        writer.Write(data);
+                    }
+
+                    NetworkPacket packet =
+                        new NetworkPacket
+                        {
+                            Type =
+                                PacketType.EnemySnapshot,
+
+                            Data =
+                                stream.ToArray()
+                        };
+
+                    byte[] packetData =
+                        PacketSerializer.Serialize(packet);
+
+                    await udpClient.SendAsync(
+                        packetData,
+                        packetData.Length
+                    );
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine(
+                    $"UDP enemy snapshot send failed: {ex.Message}"
+                );
+            }
         }
 
         private async Task SendPlayerConnect()

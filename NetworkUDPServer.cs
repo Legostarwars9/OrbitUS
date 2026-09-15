@@ -111,6 +111,16 @@ namespace Orbit_Us
                             sender
                         );
                     }
+                    if (packet.Type ==
+                        PacketType.EnemySnapshot)
+                    {
+                        await Broadcast(
+                            result.Buffer,
+                            sender
+                        );
+
+                        continue;
+                    }
                 }
                 catch (Exception ex)
                 {
