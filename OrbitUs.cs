@@ -10,7 +10,7 @@ namespace Orbit_Us
     using System.Threading.Tasks;
     using HarmonyLib;
 
-    [BepInPlugin("Orbit-Us.test", "Orbit-Us", "0.2.1")]
+    [BepInPlugin("com.legostarwars9.orbit-us", "Orbit-Us", "0.2.1")]
     public class OrbitUs : BaseUnityPlugin
     {
         private NetworkServer networkServer;
