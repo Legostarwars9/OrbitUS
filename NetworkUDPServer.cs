@@ -121,6 +121,20 @@ namespace Orbit_Us
 
                         continue;
                     }
+
+                    if (packet.Type ==
+                        PacketType.EnemyDamage)
+                    {
+                        // The host receives the damage packet through the same
+                        // UDP connection as every other connected player.
+                        // Clients ignore it; the host applies the authoritative damage.
+                        await Broadcast(
+                            result.Buffer,
+                            sender
+                        );
+
+                        continue;
+                    }
                 }
                 catch (Exception ex)
                 {

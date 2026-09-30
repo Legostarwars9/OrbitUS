@@ -57,6 +57,7 @@
         <Compile Include="PlayerReplicator.cs" />
         <Compile Include="PlayerTracker.cs" />
         <Compile Include="PlayerTransformData.cs" />
+        <Compile Include="EnemyDamagePatch.cs" />
         <Compile Include="Properties\AssemblyInfo.cs"/>
     </ItemGroup>
     <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets"/>

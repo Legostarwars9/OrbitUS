@@ -54,7 +54,8 @@ namespace Orbit_Us
             _ = SendPlayerConnect();
         }
         public async Task SendEnemySnapshot(
-            List<EnemyTransformData> enemies)
+            List<EnemyTransformData> enemies,
+            int snapshotId)
         {
             if (!connected)
                 return;
@@ -66,6 +67,7 @@ namespace Orbit_Us
                 using (System.IO.BinaryWriter writer =
                        new System.IO.BinaryWriter(stream))
                 {
+                    writer.Write(snapshotId);
                     writer.Write(enemies.Count);
 
                     foreach (EnemyTransformData enemy
@@ -141,6 +143,45 @@ namespace Orbit_Us
                 Console.WriteLine(
                     $"UDP PlayerConnect failed: {ex.Message}"
                 );
+            }
+        }
+
+        public async Task SendEnemyDamage(
+            int enemyId,
+            float damage)
+        {
+            if (!connected)
+                return;
+
+            try
+            {
+                using (System.IO.MemoryStream stream =
+                       new System.IO.MemoryStream())
+                using (System.IO.BinaryWriter writer =
+                       new System.IO.BinaryWriter(stream))
+                {
+                    writer.Write(enemyId);
+                    writer.Write(damage);
+
+                    NetworkPacket packet =
+                        new NetworkPacket
+                        {
+                            Type = PacketType.EnemyDamage,
+                            Data = stream.ToArray()
+                        };
+
+                    byte[] data =
+                        PacketSerializer.Serialize(packet);
+
+                    await udpClient.SendAsync(
+                        data,
+                        data.Length);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine(
+                    $"UDP enemy damage send failed: {ex.Message}");
             }
         }
 

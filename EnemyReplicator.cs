@@ -14,6 +14,7 @@ namespace Orbit_Us
             public Vector2 TargetPosition;
 
             public float TargetHP;
+            public int MissingSnapshots;
         }
 
         private NetworkUDPConnection connection;
@@ -25,6 +26,12 @@ namespace Orbit_Us
             new Dictionary<enemy, int>();
 
         private int nextEnemyId = 1;
+        private int nextSnapshotId = 1;
+        private int lastReceivedSnapshotId = -1;
+
+        // UDP can lose individual snapshots. Keep a remote enemy alive for a
+        // few accepted snapshots before assuming the host actually removed it.
+        private const int MissingSnapshotsBeforeRemoval = 3;
 
         private float sendTimer;
 
@@ -35,6 +42,8 @@ namespace Orbit_Us
         private bool isHost;
 
         private bool initialized;
+
+        public static EnemyReplicator Instance { get; private set; }
 
         public EnemyReplicator(
             NetworkUDPConnection connection,
@@ -50,6 +59,7 @@ namespace Orbit_Us
                 return;
 
             initialized = true;
+            Instance = this;
 
             connection.OnPacketReceived +=
                 HandlePacket;
@@ -178,8 +188,17 @@ namespace Orbit_Us
                 );
             }
 
+            int snapshotId = nextSnapshotId++;
+
+            // Do not allow the sequence number to wrap back to a negative value
+            // during normal operation. A running game will not realistically
+            // reach this, but resetting is safer than eventually sending 0.
+            if (nextSnapshotId <= 0)
+                nextSnapshotId = 1;
+
             await connection.SendEnemySnapshot(
-                snapshot
+                snapshot,
+                snapshotId
             );
         }
 
@@ -315,6 +334,14 @@ namespace Orbit_Us
         private void HandlePacket(
             NetworkPacket packet)
         {
+            if (packet.Type == PacketType.EnemyDamage)
+            {
+                if (isHost)
+                    HandleEnemyDamage(packet);
+
+                return;
+            }
+
             if (packet.Type !=
                 PacketType.EnemySnapshot)
             {
@@ -335,6 +362,16 @@ namespace Orbit_Us
                         new System.IO.BinaryReader(
                             stream))
                 {
+                    int snapshotId =
+                        reader.ReadInt32();
+
+                    // UDP does not guarantee ordering. Ignore snapshots that
+                    // arrive after a newer snapshot has already been applied.
+                    if (snapshotId <= lastReceivedSnapshotId)
+                        return;
+
+                    lastReceivedSnapshotId = snapshotId;
+
                     int count =
                         reader.ReadInt32();
 
@@ -374,12 +411,27 @@ namespace Orbit_Us
                         KeyValuePair<int, RemoteEnemy> pair
                         in remoteEnemies)
                     {
-                        if (!receivedIds.Contains(
-                                pair.Key))
+                        RemoteEnemy remoteEnemy = pair.Value;
+
+                        if (remoteEnemy == null)
                         {
-                            removedIds.Add(
-                                pair.Key
-                            );
+                            removedIds.Add(pair.Key);
+                            continue;
+                        }
+
+                        if (receivedIds.Contains(pair.Key))
+                        {
+                            remoteEnemy.MissingSnapshots = 0;
+                        }
+                        else
+                        {
+                            remoteEnemy.MissingSnapshots++;
+
+                            if (remoteEnemy.MissingSnapshots >=
+                                MissingSnapshotsBeforeRemoval)
+                            {
+                                removedIds.Add(pair.Key);
+                            }
                         }
                     }
 
@@ -415,7 +467,9 @@ namespace Orbit_Us
 
             if (!remoteEnemies.TryGetValue(
                     data.EnemyId,
-                    out RemoteEnemy remoteEnemy))
+                    out RemoteEnemy remoteEnemy) ||
+                remoteEnemy == null ||
+                remoteEnemy.GameObject == null)
             {
                 GameObject spawned =
                     SpawnEnemy(
@@ -439,7 +493,8 @@ namespace Orbit_Us
                                 data.X,
                                 data.Y
                             ),
-                        TargetHP = data.HP
+                        TargetHP = data.HP,
+                        MissingSnapshots = 0
                     };
 
                 remoteEnemies.Add(
@@ -470,6 +525,87 @@ namespace Orbit_Us
             {
                 enemyHealth.hp =
                     data.HP;
+            }
+        }
+
+        public bool TryGetRemoteEnemyId(GameObject gameObject, out int enemyId)
+        {
+            enemyId = -1;
+
+            if (isHost || gameObject == null)
+                return false;
+
+            foreach (KeyValuePair<int, RemoteEnemy> pair in remoteEnemies)
+            {
+                if (pair.Value != null && pair.Value.GameObject == gameObject)
+                {
+                    enemyId = pair.Key;
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        public async void SendEnemyDamage(int enemyId, float damage)
+        {
+            if (isHost || connection == null || damage <= 0f)
+                return;
+
+            await connection.SendEnemyDamage(enemyId, damage);
+        }
+
+        private void HandleEnemyDamage(NetworkPacket packet)
+        {
+            try
+            {
+                using (System.IO.MemoryStream stream =
+                       new System.IO.MemoryStream(packet.Data))
+                using (System.IO.BinaryReader reader =
+                       new System.IO.BinaryReader(stream))
+                {
+                    int enemyId = reader.ReadInt32();
+                    float damage = reader.ReadSingle();
+
+                    if (damage <= 0f)
+                        return;
+
+                    enemy target = null;
+
+                    foreach (KeyValuePair<enemy, int> pair in hostEnemies)
+                    {
+                        if (pair.Value == enemyId)
+                        {
+                            target = pair.Key;
+                            break;
+                        }
+                    }
+
+                    if (target == null)
+                        return;
+
+                    health targetHealth = target.GetComponent<health>();
+                    if (targetHealth == null || targetHealth.dead)
+                        return;
+
+                    worm targetWorm = targetHealth as worm;
+                    if (targetWorm != null)
+                    {
+                        targetWorm.headHp -= damage;
+                        targetWorm.headHp = Mathf.Clamp(
+                            targetWorm.headHp, 0f, 100000f);
+                        targetWorm.CheckIfDead();
+                    }
+                    else
+                    {
+                        targetHealth.HandleDamageImpulse(damage);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError(
+                    $"[Orbit-Us] Enemy damage error: {ex}");
             }
         }
 
@@ -630,8 +766,13 @@ namespace Orbit_Us
             hostEnemies.Clear();
 
             nextEnemyId = 1;
+            nextSnapshotId = 1;
+            lastReceivedSnapshotId = -1;
             sendTimer = 0f;
             initialized = false;
+
+            if (Instance == this)
+                Instance = null;
         }
     }
 }

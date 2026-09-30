@@ -7,6 +7,7 @@ namespace Orbit_Us
         PlayerDisconnected,
         PlayerTransform,
         EnemySnapshot,
+        EnemyDamage,
         GameState,
         KeepAlive,
         KeepAliveResponse,
