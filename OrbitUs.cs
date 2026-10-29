@@ -30,7 +30,7 @@ namespace Orbit_Us
 
         private float transformSendTimer;
 
-        private const float TransformSendRate = 0.05f;
+        private const float TransformSendRate = 0.025f;
 
         private ConfigEntry<string> serverAddress;
         private ConfigEntry<int> tcpPort;
@@ -200,6 +200,7 @@ namespace Orbit_Us
                     $"Connecting UDP to {serverAddress.Value}:{udpPort.Value}..."
                 );
 
+                networkUDPConnection.HostConnection = false;
                 networkUDPConnection.Connect(
                     serverAddress.Value,
                     udpPort.Value
@@ -244,6 +245,12 @@ namespace Orbit_Us
                     $"UDP connection failed: {ex.Message}"
                 );
 
+                enemyReplicator?.Destroy();
+                playerReplicator?.Destroy();
+                playerTracker?.Destroy();
+                networkUDPConnection.Disconnect();
+                MultiplayerActive = false;
+                IsHost = false;
                 udpConnected = false;
             }
         }
@@ -323,6 +330,7 @@ namespace Orbit_Us
 
             try
             {
+                networkUDPConnection.HostConnection = true;
                 networkUDPConnection.Connect(
                     "127.0.0.1",
                     udpPort.Value
@@ -367,6 +375,14 @@ namespace Orbit_Us
                     $"Host UDP connection failed: {ex.Message}"
                 );
 
+                enemyReplicator?.Destroy();
+                playerReplicator?.Destroy();
+                playerTracker?.Destroy();
+                networkUDPConnection.Disconnect();
+                networkUDPServer.Stop();
+                networkServer.Stop();
+                MultiplayerActive = false;
+                IsHost = false;
                 udpConnected = false;
             }
         }
@@ -409,6 +425,8 @@ namespace Orbit_Us
         {
             if (!udpConnected)
                 return;
+
+            networkUDPConnection.DispatchPendingPackets();
 
             if (playerReplicator != null)
             {
@@ -483,6 +501,9 @@ namespace Orbit_Us
 
         private void OnDestroy()
         {
+            enemyReplicator?.Destroy();
+            MultiplayerActive = false;
+            IsHost = false;
             playerTracker?.Destroy();
 
             playerReplicator?.Destroy();

@@ -9,6 +9,8 @@ namespace Orbit_Us
         public float X;
         public float Y;
         public float HP;
+        public float HeadHP;
+        public float Rotation;
 
         public byte[] Serialize()
         {
@@ -20,6 +22,8 @@ namespace Orbit_Us
                 writer.Write(X);
                 writer.Write(Y);
                 writer.Write(HP);
+                writer.Write(HeadHP);
+                writer.Write(Rotation);
 
                 return stream.ToArray();
             }
@@ -36,7 +40,9 @@ namespace Orbit_Us
                     Type = reader.ReadInt32(),
                     X = reader.ReadSingle(),
                     Y = reader.ReadSingle(),
-                    HP = reader.ReadSingle()
+                    HP = reader.ReadSingle(),
+                    HeadHP = reader.ReadSingle(),
+                    Rotation = reader.ReadSingle()
                 };
             }
         }

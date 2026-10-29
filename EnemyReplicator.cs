@@ -9,45 +9,41 @@ namespace Orbit_Us
         private class RemoteEnemy
         {
             public GameObject GameObject;
-            public int Type;
-
+            public health Health;
             public Vector2 TargetPosition;
-
+            public float TargetRotation;
             public float TargetHP;
+            public float TargetHeadHP;
             public int MissingSnapshots;
         }
 
-        private NetworkUDPConnection connection;
-
-        private Dictionary<int, RemoteEnemy> remoteEnemies =
-            new Dictionary<int, RemoteEnemy>();
-
-        private Dictionary<enemy, int> hostEnemies =
-            new Dictionary<enemy, int>();
-
+        private readonly NetworkUDPConnection connection;
+        private readonly bool isHost;
+        private readonly Dictionary<int, RemoteEnemy> remoteEnemies = new Dictionary<int, RemoteEnemy>();
+        private readonly Dictionary<GameObject, int> remoteIds = new Dictionary<GameObject, int>();
+        private readonly Dictionary<enemy, int> hostEnemies = new Dictionary<enemy, int>();
+        private readonly Dictionary<int, enemy> hostEnemiesById = new Dictionary<int, enemy>();
+        private readonly Dictionary<int, GameObject> prefabs = new Dictionary<int, GameObject>();
+        private readonly Dictionary<string, int> prefabTypes = new Dictionary<string, int>(StringComparer.Ordinal);
+        private readonly HashSet<string> unknownPrefabs = new HashSet<string>();
+        private readonly Dictionary<int, DamageRequestHistory> damageHistory = new Dictionary<int, DamageRequestHistory>();
+        private readonly Dictionary<int, EnemyDamageData> pendingDamage = new Dictionary<int, EnemyDamageData>();
+        private readonly EnemySnapshotCodec.Assembler snapshots = new EnemySnapshotCodec.Assembler();
         private int nextEnemyId = 1;
         private int nextSnapshotId = 1;
-        private int lastReceivedSnapshotId = -1;
-
-        // UDP can lose individual snapshots. Keep a remote enemy alive for a
-        // few accepted snapshots before assuming the host actually removed it.
-        private const int MissingSnapshotsBeforeRemoval = 3;
-
+        private int nextDamageId = 1;
         private float sendTimer;
-
-        private const float SendRate = 0.05f;
-
-        private const float PositionCorrectionSpeed = 20f;
-
-        private bool isHost;
-
+        private float retryTimer;
+        private float catalogTimer;
         private bool initialized;
-
+        private bool sendingSnapshot;
+        private GameObject stagingRoot;
+        private waveManager waveManager;
+        private const float SendRate = 0.05f;
+        private const int MissingSnapshotsBeforeRemoval = 3;
         public static EnemyReplicator Instance { get; private set; }
 
-        public EnemyReplicator(
-            NetworkUDPConnection connection,
-            bool isHost)
+        public EnemyReplicator(NetworkUDPConnection connection, bool isHost)
         {
             this.connection = connection;
             this.isHost = isHost;
@@ -55,724 +51,407 @@ namespace Orbit_Us
 
         public void Initialize()
         {
-            if (initialized)
-                return;
-
+            if (initialized) return;
             initialized = true;
             Instance = this;
-
-            connection.OnPacketReceived +=
-                HandlePacket;
-
-            Debug.Log(
-                $"[Orbit-Us] EnemyReplicator initialized. Host={isHost}"
-            );
+            connection.OnPacketReceived += HandlePacket;
+            RefreshPrefabCatalog();
+            Debug.Log($"[Orbit-Us] Enemy replication initialized. Host={isHost}, prefabs={prefabs.Count}");
         }
 
         public void Update()
         {
-            if (!initialized)
-                return;
+            if (!initialized) return;
+            catalogTimer += Time.unscaledDeltaTime;
+            if (catalogTimer >= 2f || waveManager == null)
+            {
+                catalogTimer = 0f;
+                RefreshPrefabCatalog();
+            }
 
             if (isHost)
             {
-                sendTimer +=
-                    Time.deltaTime;
-
-                if (sendTimer >= SendRate)
+                sendTimer += Time.deltaTime;
+                if (sendTimer >= SendRate && !sendingSnapshot)
                 {
                     sendTimer = 0f;
-
                     SendEnemySnapshot();
                 }
             }
             else
             {
+                if (waveManager != null) waveManager.StopAllCoroutines();
+                RemoveUnauthorizedClientEnemies();
                 UpdateRemoteEnemies();
+                retryTimer += Time.unscaledDeltaTime;
+                if (retryTimer >= 0.2f)
+                {
+                    retryTimer = 0f;
+                    int firstPending = FirstPendingDamageId();
+                    foreach (var damage in new List<EnemyDamageData>(pendingDamage.Values))
+                        if ((long)damage.RequestId - firstPending < 1024)
+                            _ = connection.SendEnemyDamageRequest(damage);
+                }
+            }
+        }
+
+        private void RefreshPrefabCatalog()
+        {
+            waveManager = UnityEngine.Object.FindObjectOfType<waveManager>();
+            // Include locked enemies and nested/body prefabs independently of the
+            // randomly changing wave pools on each machine. Never use live clones.
+            foreach (var prefab in Resources.FindObjectsOfTypeAll<GameObject>())
+            {
+                if (prefab == null || prefab.scene.IsValid() || prefab.GetComponent<enemy>() == null)
+                    continue;
+                string name = prefab.name;
+                int type = StableType(name);
+                if (prefabs.TryGetValue(type, out GameObject existing) && existing != null && existing.name != name)
+                {
+                    Debug.LogError($"[Orbit-Us] Enemy prefab hash collision: {name}, {existing.name}");
+                    continue;
+                }
+                prefabs[type] = prefab;
+                prefabTypes[name] = type;
+            }
+        }
+
+        private static int StableType(string name)
+        {
+            // String.GetHashCode is not guaranteed to agree across runtimes.
+            unchecked
+            {
+                uint hash = 2166136261;
+                foreach (char character in name)
+                    hash = (hash ^ character) * 16777619;
+                return (int)(hash & 0x7fffffff);
+            }
+        }
+
+        private int GetEnemyType(GameObject enemyObject)
+        {
+            string name = enemyObject.name.Replace("(Clone)", "").Trim();
+            if (prefabTypes.TryGetValue(name, out int type)) return type;
+            // Some scripts rename children (e.g. "node 2"). Only use a structural
+            // match when it identifies exactly one prefab.
+            int match = -1;
+            foreach (var pair in prefabs)
+            {
+                if (pair.Value == null || !MatchesPrefab(enemyObject, pair.Value)) continue;
+                if (match >= 0) { match = -1; break; }
+                match = pair.Key;
+            }
+            if (match < 0 && unknownPrefabs.Add(name))
+                Debug.LogWarning($"[Orbit-Us] Cannot identify enemy prefab '{name}'; skipping replication.");
+            return match;
+        }
+
+        private bool MatchesPrefab(GameObject instance, GameObject prefab)
+        {
+            var instanceComponents = instance.GetComponents<Component>();
+            var prefabComponents = prefab.GetComponents<Component>();
+            if (instanceComponents.Length != prefabComponents.Length) return false;
+            var types = new List<Type>();
+            foreach (var component in instanceComponents)
+                if (component != null) types.Add(component.GetType());
+            foreach (var component in prefabComponents)
+            {
+                if (component == null) continue;
+                if (!types.Remove(component.GetType())) return false;
+            }
+            return types.Count == 0;
+        }
+
+        private void RemoveUnauthorizedClientEnemies()
+        {
+            if (enemyManager.instance == null) return;
+            foreach (var current in new List<enemy>(enemyManager.instance.GetEnemies()))
+            {
+                if (current == null) continue;
+                var ancestor = current.transform;
+                bool belongsToReplica = false;
+                while (ancestor != null)
+                {
+                    if (remoteIds.ContainsKey(ancestor.gameObject)) { belongsToReplica = true; break; }
+                    ancestor = ancestor.parent;
+                }
+                if (belongsToReplica) continue;
+                // Deactivate now: Destroy alone leaves time to reproduce again.
+                current.gameObject.SetActive(false);
+                UnityEngine.Object.Destroy(current.gameObject);
             }
         }
 
         private async void SendEnemySnapshot()
         {
-            enemyManager manager =
-                enemyManager.instance;
-
-            if (manager == null)
-                return;
-
-            List<enemy> enemies =
-                manager.GetEnemies();
-
-            List<EnemyTransformData> snapshot =
-                new List<EnemyTransformData>();
-
-            HashSet<enemy> currentEnemies =
-                new HashSet<enemy>();
-
-            foreach (enemy currentEnemy in enemies)
-            {
-                if (currentEnemy == null)
-                    continue;
-
-                currentEnemies.Add(
-                    currentEnemy
-                );
-
-                if (!hostEnemies.TryGetValue(
-                        currentEnemy,
-                        out int enemyId))
-                {
-                    enemyId =
-                        nextEnemyId++;
-
-                    hostEnemies.Add(
-                        currentEnemy,
-                        enemyId
-                    );
-
-                    Debug.Log(
-                        $"[Orbit-Us] Host enemy registered: " +
-                        $"{enemyId} ({currentEnemy.gameObject.name})"
-                    );
-                }
-
-                health enemyHealth =
-                    currentEnemy.GetComponent<health>();
-
-                float hp =
-                    enemyHealth != null
-                        ? enemyHealth.hp
-                        : 0f;
-
-                int type =
-                    GetEnemyType(
-                        currentEnemy.gameObject
-                    );
-
-                snapshot.Add(
-                    new EnemyTransformData
-                    {
-                        EnemyId = enemyId,
-                        Type = type,
-                        X =
-                            currentEnemy.transform
-                                .position.x,
-                        Y =
-                            currentEnemy.transform
-                                .position.y,
-                        HP = hp
-                    }
-                );
-            }
-
-            List<enemy> removedEnemies =
-                new List<enemy>();
-
-            foreach (
-                KeyValuePair<enemy, int> pair
-                in hostEnemies)
-            {
-                if (!currentEnemies.Contains(
-                        pair.Key))
-                {
-                    removedEnemies.Add(
-                        pair.Key
-                    );
-                }
-            }
-
-            foreach (enemy removed in removedEnemies)
-            {
-                hostEnemies.Remove(
-                    removed
-                );
-            }
-
-            int snapshotId = nextSnapshotId++;
-
-            // Do not allow the sequence number to wrap back to a negative value
-            // during normal operation. A running game will not realistically
-            // reach this, but resetting is safer than eventually sending 0.
-            if (nextSnapshotId <= 0)
-                nextSnapshotId = 1;
-
-            await connection.SendEnemySnapshot(
-                snapshot,
-                snapshotId
-            );
-        }
-
-        private int GetEnemyType(
-            GameObject enemyObject)
-        {
-            waveManager manager =
-                UnityEngine.Object.FindObjectOfType<
-                    waveManager
-                >();
-
-            if (manager == null)
-                return -1;
-
-            if (manager.enemyPool != null)
-            {
-                for (int i = 0;
-                     i < manager.enemyPool.Count;
-                     i++)
-                {
-                    GameObject prefab =
-                        manager.enemyPool[i];
-
-                    if (prefab == null)
-                        continue;
-
-                    if (MatchesPrefab(
-                            enemyObject,
-                            prefab))
-                    {
-                        return i;
-                    }
-                }
-            }
-
-            if (manager.minibossPool != null)
-            {
-                for (int i = 0;
-                     i < manager.minibossPool.Length;
-                     i++)
-                {
-                    GameObject prefab =
-                        manager.minibossPool[i];
-
-                    if (prefab == null)
-                        continue;
-
-                    if (MatchesPrefab(
-                            enemyObject,
-                            prefab))
-                    {
-                        return 1000 + i;
-                    }
-                }
-            }
-
-            return -1;
-        }
-
-        private bool MatchesPrefab(
-            GameObject instance,
-            GameObject prefab)
-        {
-            if (instance == null ||
-                prefab == null)
-            {
-                return false;
-            }
-
-            health instanceHealth =
-                instance.GetComponent<health>();
-
-            health prefabHealth =
-                prefab.GetComponent<health>();
-
-            if (instanceHealth != null &&
-                prefabHealth != null)
-            {
-                if (Mathf.Abs(
-                        instanceHealth.hpMax -
-                        prefabHealth.hpMax
-                    ) > 0.01f)
-                {
-                    return false;
-                }
-            }
-
-            Component[] instanceComponents =
-                instance.GetComponents<Component>();
-
-            Component[] prefabComponents =
-                prefab.GetComponents<Component>();
-
-            if (instanceComponents.Length !=
-                prefabComponents.Length)
-            {
-                return false;
-            }
-
-            foreach (Component prefabComponent
-                     in prefabComponents)
-            {
-                if (prefabComponent == null)
-                    continue;
-
-                Type prefabType =
-                    prefabComponent.GetType();
-
-                bool found = false;
-
-                foreach (
-                    Component instanceComponent
-                    in instanceComponents)
-                {
-                    if (instanceComponent == null)
-                        continue;
-
-                    if (instanceComponent.GetType() ==
-                        prefabType)
-                    {
-                        found = true;
-                        break;
-                    }
-                }
-
-                if (!found)
-                    return false;
-            }
-
-            return true;
-        }
-
-        private void HandlePacket(
-            NetworkPacket packet)
-        {
-            if (packet.Type == PacketType.EnemyDamage)
-            {
-                if (isHost)
-                    HandleEnemyDamage(packet);
-
-                return;
-            }
-
-            if (packet.Type !=
-                PacketType.EnemySnapshot)
-            {
-                return;
-            }
-
-            if (isHost)
-                return;
-
+            if (enemyManager.instance == null) return;
+            sendingSnapshot = true;
             try
             {
-                using (
-                    System.IO.MemoryStream stream =
-                        new System.IO.MemoryStream(
-                            packet.Data))
-                using (
-                    System.IO.BinaryReader reader =
-                        new System.IO.BinaryReader(
-                            stream))
+                var snapshot = new List<EnemyTransformData>();
+                var currentEnemies = new HashSet<enemy>();
+                foreach (var current in new List<enemy>(enemyManager.instance.GetEnemies()))
                 {
-                    int snapshotId =
-                        reader.ReadInt32();
-
-                    // UDP does not guarantee ordering. Ignore snapshots that
-                    // arrive after a newer snapshot has already been applied.
-                    if (snapshotId <= lastReceivedSnapshotId)
-                        return;
-
-                    lastReceivedSnapshotId = snapshotId;
-
-                    int count =
-                        reader.ReadInt32();
-
-                    HashSet<int> receivedIds =
-                        new HashSet<int>();
-
-                    for (int i = 0;
-                         i < count;
-                         i++)
+                    if (current == null || !currentEnemies.Add(current)) continue;
+                    if (!hostEnemies.TryGetValue(current, out int id))
                     {
-                        int dataLength =
-                            reader.ReadInt32();
-
-                        byte[] data =
-                            reader.ReadBytes(
-                                dataLength
-                            );
-
-                        EnemyTransformData enemyData =
-                            EnemyTransformData.Deserialize(
-                                data
-                            );
-
-                        receivedIds.Add(
-                            enemyData.EnemyId
-                        );
-
-                        UpdateRemoteEnemy(
-                            enemyData
-                        );
+                        id = nextEnemyId++;
+                        hostEnemies.Add(current, id);
+                        hostEnemiesById.Add(id, current);
                     }
-
-                    List<int> removedIds =
-                        new List<int>();
-
-                    foreach (
-                        KeyValuePair<int, RemoteEnemy> pair
-                        in remoteEnemies)
+                    var h = current.GetComponent<health>();
+                    int type = GetEnemyType(current.gameObject);
+                    if (type < 0 || (h != null && h.dead)) continue;
+                    var w = h as worm;
+                    snapshot.Add(new EnemyTransformData
                     {
-                        RemoteEnemy remoteEnemy = pair.Value;
+                        EnemyId = id, Type = type,
+                        X = current.transform.position.x, Y = current.transform.position.y,
+                        HP = h != null ? h.hp : 0f,
+                        HeadHP = w != null ? w.headHp : 0f,
+                        Rotation = current.transform.eulerAngles.z
+                    });
+                }
+                foreach (var pair in new List<KeyValuePair<enemy, int>>(hostEnemies))
+                {
+                    if (currentEnemies.Contains(pair.Key)) continue;
+                    hostEnemies.Remove(pair.Key);
+                    hostEnemiesById.Remove(pair.Value);
+                }
+                await connection.SendEnemySnapshot(snapshot, nextSnapshotId++);
+            }
+            catch (Exception ex) { Debug.LogError($"[Orbit-Us] Enemy snapshot send failed: {ex}"); }
+            finally { sendingSnapshot = false; }
+        }
 
-                        if (remoteEnemy == null)
-                        {
-                            removedIds.Add(pair.Key);
-                            continue;
-                        }
-
-                        if (receivedIds.Contains(pair.Key))
-                        {
-                            remoteEnemy.MissingSnapshots = 0;
-                        }
-                        else
-                        {
-                            remoteEnemy.MissingSnapshots++;
-
-                            if (remoteEnemy.MissingSnapshots >=
-                                MissingSnapshotsBeforeRemoval)
-                            {
-                                removedIds.Add(pair.Key);
-                            }
-                        }
+        private void HandlePacket(NetworkPacket packet)
+        {
+            if (!initialized) return;
+            try
+            {
+                if (packet.Type == PacketType.EnemyDamage && isHost)
+                    HandleEnemyDamage(packet);
+                else if (packet.Type == PacketType.EnemyDamageAck && !isHost)
+                {
+                    if (packet.Data.Length == 8 && BitConverter.ToInt32(packet.Data, 0) == connection.LocalPlayerId)
+                        pendingDamage.Remove(BitConverter.ToInt32(packet.Data, 4));
+                }
+                else if (packet.Type == PacketType.EnemySnapshot && !isHost &&
+                         snapshots.TryAdd(packet.Data, out List<EnemyTransformData> snapshot))
+                {
+                    var receivedIds = new HashSet<int>();
+                    foreach (var data in snapshot)
+                    {
+                        receivedIds.Add(data.EnemyId);
+                        UpdateRemoteEnemy(data);
                     }
-
-                    foreach (int enemyId
-                             in removedIds)
+                    foreach (var pair in new List<KeyValuePair<int, RemoteEnemy>>(remoteEnemies))
                     {
-                        RemoveRemoteEnemy(
-                            enemyId
-                        );
+                        if (receivedIds.Contains(pair.Key)) pair.Value.MissingSnapshots = 0;
+                        else if (++pair.Value.MissingSnapshots >= MissingSnapshotsBeforeRemoval)
+                            RemoveRemoteEnemy(pair.Key);
                     }
                 }
             }
-            catch (Exception ex)
-            {
-                Debug.LogError(
-                    $"[Orbit-Us] Enemy snapshot error: {ex}"
-                );
-            }
+            catch (Exception ex) { Debug.LogError($"[Orbit-Us] Enemy replication packet error: {ex}"); }
         }
 
-        private void UpdateRemoteEnemy(
-            EnemyTransformData data)
+        private void UpdateRemoteEnemy(EnemyTransformData data)
         {
-            if (data.Type < 0)
+            if (!remoteEnemies.TryGetValue(data.EnemyId, out RemoteEnemy remote) || remote.GameObject == null)
             {
-                Debug.LogWarning(
-                    $"[Orbit-Us] Enemy {data.EnemyId} " +
-                    $"has unknown type {data.Type}"
-                );
-
-                return;
+                if (remote != null && !ReferenceEquals(remote.GameObject, null))
+                    remoteIds.Remove(remote.GameObject);
+                var spawned = SpawnEnemy(data.Type, new Vector2(data.X, data.Y));
+                if (spawned == null) return;
+                remote = new RemoteEnemy { GameObject = spawned, Health = spawned.GetComponent<health>() };
+                // Add() throws after Instantiate when an old entry survives a
+                // destroyed object, leaking another clone on every snapshot.
+                remoteEnemies[data.EnemyId] = remote;
+                remoteIds[spawned] = data.EnemyId;
+                remote.TargetHP = data.HP;
+                remote.TargetHeadHP = data.HeadHP;
+                RestoreHealth(remote);
+                spawned.transform.SetParent(null, true);
+                spawned.SetActive(true);
             }
-
-            if (!remoteEnemies.TryGetValue(
-                    data.EnemyId,
-                    out RemoteEnemy remoteEnemy) ||
-                remoteEnemy == null ||
-                remoteEnemy.GameObject == null)
-            {
-                GameObject spawned =
-                    SpawnEnemy(
-                        data.Type,
-                        new Vector2(
-                            data.X,
-                            data.Y
-                        )
-                    );
-
-                if (spawned == null)
-                    return;
-
-                remoteEnemy =
-                    new RemoteEnemy
-                    {
-                        GameObject = spawned,
-                        Type = data.Type,
-                        TargetPosition =
-                            new Vector2(
-                                data.X,
-                                data.Y
-                            ),
-                        TargetHP = data.HP,
-                        MissingSnapshots = 0
-                    };
-
-                remoteEnemies.Add(
-                    data.EnemyId,
-                    remoteEnemy
-                );
-
-                Debug.Log(
-                    $"[Orbit-Us] Created remote enemy " +
-                    $"{data.EnemyId} type {data.Type}"
-                );
-            }
-
-            remoteEnemy.TargetPosition =
-                new Vector2(
-                    data.X,
-                    data.Y
-                );
-
-            remoteEnemy.TargetHP =
-                data.HP;
-
-            health enemyHealth =
-                remoteEnemy.GameObject
-                    .GetComponent<health>();
-
-            if (enemyHealth != null)
-            {
-                enemyHealth.hp =
-                    data.HP;
-            }
+            remote.TargetPosition = new Vector2(data.X, data.Y);
+            remote.TargetRotation = data.Rotation;
+            CaptureRemoteDamage(remote.Health);
+            remote.TargetHP = data.HP;
+            remote.TargetHeadHP = data.HeadHP;
+            RestoreHealth(remote);
         }
 
         public bool TryGetRemoteEnemyId(GameObject gameObject, out int enemyId)
         {
             enemyId = -1;
-
-            if (isHost || gameObject == null)
-                return false;
-
-            foreach (KeyValuePair<int, RemoteEnemy> pair in remoteEnemies)
-            {
-                if (pair.Value != null && pair.Value.GameObject == gameObject)
-                {
-                    enemyId = pair.Key;
-                    return true;
-                }
-            }
-
-            return false;
+            return initialized && !isHost && gameObject != null && remoteIds.TryGetValue(gameObject, out enemyId);
         }
 
-        public async void SendEnemyDamage(int enemyId, float damage)
+        // Capture direct HP changes as well as the game's damage methods. Restore
+        // host HP before returning so repeated death checks cannot resubmit a hit.
+        public bool CaptureRemoteDamage(health target)
         {
-            if (isHost || connection == null || damage <= 0f)
-                return;
+            if (target == null || !TryGetRemoteEnemyId(target.gameObject, out int id)) return false;
+            RemoteEnemy remote = remoteEnemies[id];
+            float damage = Mathf.Max(0f, remote.TargetHP - target.hp);
+            var w = target as worm;
+            float headDamage = w != null && !(w is wormShadow)
+                ? Mathf.Max(0f, remote.TargetHeadHP - w.headHp) : 0f;
+            RestoreHealth(remote);
+            if (damage > 0f || headDamage > 0f) QueueDamage(id, damage, headDamage);
+            return true;
+        }
 
-            await connection.SendEnemyDamage(enemyId, damage);
+        public void SendEnemyDamage(int enemyId, float damage)
+        {
+            QueueDamage(enemyId, damage, 0f);
+        }
+
+        private void QueueDamage(int enemyId, float damage, float headDamage)
+        {
+            if (!initialized || isHost || float.IsNaN(damage) || float.IsInfinity(damage) ||
+                float.IsNaN(headDamage) || float.IsInfinity(headDamage) ||
+                damage < 0f || headDamage < 0f || (damage == 0f && headDamage == 0f)) return;
+            var request = new EnemyDamageData
+            {
+                RequestId = nextDamageId++, EnemyId = enemyId,
+                Damage = damage, HeadDamage = headDamage
+            };
+            pendingDamage.Add(request.RequestId, request);
+            // Keep unacknowledged requests within the host's replay window.
+            // Otherwise a long-delayed hit could be pruned before it arrives.
+            if ((long)request.RequestId - FirstPendingDamageId() < 1024)
+                _ = connection.SendEnemyDamageRequest(request);
+        }
+
+        private int FirstPendingDamageId()
+        {
+            int first = int.MaxValue;
+            foreach (int id in pendingDamage.Keys) first = Math.Min(first, id);
+            return first;
         }
 
         private void HandleEnemyDamage(NetworkPacket packet)
         {
-            try
+            EnemyDamageData request = EnemyDamageData.Deserialize(packet.Data);
+            if (request.PlayerId <= 0) return;
+            if (!damageHistory.TryGetValue(request.PlayerId, out DamageRequestHistory history))
             {
-                using (System.IO.MemoryStream stream =
-                       new System.IO.MemoryStream(packet.Data))
-                using (System.IO.BinaryReader reader =
-                       new System.IO.BinaryReader(stream))
+                history = new DamageRequestHistory();
+                damageHistory.Add(request.PlayerId, history);
+            }
+            if (history.Accept(request.RequestId) &&
+                hostEnemiesById.TryGetValue(request.EnemyId, out enemy target) && target != null)
+            {
+                var h = target.GetComponent<health>();
+                if (h != null && !h.dead)
                 {
-                    int enemyId = reader.ReadInt32();
-                    float damage = reader.ReadSingle();
-
-                    if (damage <= 0f)
-                        return;
-
-                    enemy target = null;
-
-                    foreach (KeyValuePair<enemy, int> pair in hostEnemies)
+                    var w = h as worm;
+                    if (w != null && !(w is wormShadow))
                     {
-                        if (pair.Value == enemyId)
-                        {
-                            target = pair.Key;
-                            break;
-                        }
+                        w.headHp = Mathf.Max(0f, w.headHp - request.HeadDamage - request.Damage);
+                        w.hp = w.headHp;
+                        foreach (var segment in w.tailHealth)
+                            if (segment != null) w.hp += segment.hp;
+                        w.CheckIfDead();
                     }
-
-                    if (target == null)
-                        return;
-
-                    health targetHealth = target.GetComponent<health>();
-                    if (targetHealth == null || targetHealth.dead)
-                        return;
-
-                    worm targetWorm = targetHealth as worm;
-                    if (targetWorm != null)
-                    {
-                        targetWorm.headHp -= damage;
-                        targetWorm.headHp = Mathf.Clamp(
-                            targetWorm.headHp, 0f, 100000f);
-                        targetWorm.CheckIfDead();
-                    }
-                    else
-                    {
-                        targetHealth.HandleDamageImpulse(damage);
-                    }
+                    else if (request.Damage > 0f)
+                        h.HandleDamageImpulse(request.Damage);
                 }
             }
-            catch (Exception ex)
+            // ACK duplicates and dead targets too: these requests are finished.
+            _ = connection.SendEnemyDamageAcknowledgement(request.PlayerId, request.RequestId);
+        }
+
+        private GameObject SpawnEnemy(int type, Vector2 position)
+        {
+            if (!prefabs.TryGetValue(type, out GameObject prefab) || prefab == null)
             {
-                Debug.LogError(
-                    $"[Orbit-Us] Enemy damage error: {ex}");
+                if (unknownPrefabs.Add("type:" + type))
+                    Debug.LogWarning($"[Orbit-Us] Missing enemy prefab type {type}; both players need the same game/mod build.");
+                return null;
+            }
+            if (stagingRoot == null)
+            {
+                stagingRoot = new GameObject("OrbitUs_EnemyStaging");
+                stagingRoot.SetActive(false);
+            }
+            var spawned = UnityEngine.Object.Instantiate(prefab, position, prefab.transform.rotation, stagingRoot.transform);
+            try { MakeRemoteEnemyServerControlled(spawned); }
+            catch
+            {
+                UnityEngine.Object.Destroy(spawned);
+                throw;
+            }
+            return spawned;
+        }
+
+        private void MakeRemoteEnemyServerControlled(GameObject spawned)
+        {
+            // Prevent local reproduction, structure growth, gun coroutines,
+            // temperature splitting and physics. Health must still receive hits.
+            foreach (var behaviour in spawned.GetComponentsInChildren<MonoBehaviour>(true))
+            {
+                if (behaviour == null || behaviour is health || behaviour is enemy) continue;
+                behaviour.StopAllCoroutines();
+                behaviour.enabled = false;
+            }
+            foreach (var rb in spawned.GetComponentsInChildren<Rigidbody2D>(true))
+            {
+                rb.velocity = Vector2.zero;
+                rb.angularVelocity = 0f;
+                rb.bodyType = RigidbodyType2D.Kinematic;
             }
         }
 
-        private GameObject SpawnEnemy(
-            int type,
-            Vector2 position)
+        private static void RestoreHealth(RemoteEnemy remote)
         {
-            waveManager manager =
-                UnityEngine.Object.FindObjectOfType<
-                    waveManager
-                >();
-
-            if (manager == null)
-                return null;
-
-            GameObject prefab = null;
-
-            if (type >= 1000)
-            {
-                int minibossIndex =
-                    type - 1000;
-
-                if (manager.minibossPool == null ||
-                    minibossIndex < 0 ||
-                    minibossIndex >=
-                    manager.minibossPool.Length)
-                {
-                    return null;
-                }
-
-                prefab =
-                    manager.minibossPool[
-                        minibossIndex
-                    ];
-            }
-            else
-            {
-                if (manager.enemyPool == null ||
-                    type < 0 ||
-                    type >= manager.enemyPool.Count)
-                {
-                    return null;
-                }
-
-                prefab =
-                    manager.enemyPool[type];
-            }
-
-            if (prefab == null)
-                return null;
-
-            GameObject spawned =
-                UnityEngine.Object.Instantiate(
-                    prefab,
-                    position,
-                    prefab.transform.rotation
-                );
-
-            Rigidbody2D rb =
-                spawned.GetComponent<Rigidbody2D>();
-
-            if (rb != null)
-                rb.velocity = Vector2.zero;
-
-            return spawned;
+            if (remote.Health == null) return;
+            remote.Health.hp = remote.TargetHP;
+            remote.Health.dead = false;
+            var w = remote.Health as worm;
+            if (w != null) w.headHp = remote.TargetHeadHP;
         }
 
         private void UpdateRemoteEnemies()
         {
-            foreach (
-                KeyValuePair<int, RemoteEnemy> pair
-                in remoteEnemies)
+            foreach (var remote in remoteEnemies.Values)
             {
-                RemoteEnemy remoteEnemy =
-                    pair.Value;
-
-                if (remoteEnemy == null ||
-                    remoteEnemy.GameObject == null)
-                {
-                    continue;
-                }
-
-                Transform transform =
-                    remoteEnemy.GameObject.transform;
-
-                Vector3 target =
-                    new Vector3(
-                        remoteEnemy.TargetPosition.x,
-                        remoteEnemy.TargetPosition.y,
-                        transform.position.z
-                    );
-
-                transform.position =
-                    Vector3.Lerp(
-                        transform.position,
-                        target,
-                        PositionCorrectionSpeed *
-                        Time.deltaTime
-                    );
-
-                health enemyHealth =
-                    remoteEnemy.GameObject
-                        .GetComponent<health>();
-
-                if (enemyHealth != null)
-                {
-                    enemyHealth.hp =
-                        remoteEnemy.TargetHP;
-                }
+                if (remote.GameObject == null) continue;
+                CaptureRemoteDamage(remote.Health);
+                var transform = remote.GameObject.transform;
+                transform.position = Vector3.Lerp(transform.position,
+                    new Vector3(remote.TargetPosition.x, remote.TargetPosition.y, transform.position.z), 20f * Time.deltaTime);
+                transform.rotation = Quaternion.Lerp(transform.rotation,
+                    Quaternion.Euler(0f, 0f, remote.TargetRotation), 20f * Time.deltaTime);
             }
         }
 
-        private void RemoveRemoteEnemy(
-            int enemyId)
+        private void RemoveRemoteEnemy(int enemyId)
         {
-            if (!remoteEnemies.TryGetValue(
-                    enemyId,
-                    out RemoteEnemy remoteEnemy))
+            if (!remoteEnemies.TryGetValue(enemyId, out RemoteEnemy remote)) return;
+            if (!ReferenceEquals(remote.GameObject, null)) remoteIds.Remove(remote.GameObject);
+            if (remote.GameObject != null)
             {
-                return;
+                remote.GameObject.SetActive(false);
+                UnityEngine.Object.Destroy(remote.GameObject);
             }
-
-            if (remoteEnemy != null &&
-                remoteEnemy.GameObject != null)
-            {
-                UnityEngine.Object.Destroy(
-                    remoteEnemy.GameObject
-                );
-            }
-
-            remoteEnemies.Remove(
-                enemyId
-            );
+            remoteEnemies.Remove(enemyId);
         }
 
         public void Destroy()
         {
-            if (connection != null)
-            {
-                connection.OnPacketReceived -=
-                    HandlePacket;
-            }
-
-            foreach (
-                RemoteEnemy remoteEnemy
-                in remoteEnemies.Values)
-            {
-                if (remoteEnemy != null &&
-                    remoteEnemy.GameObject != null)
-                {
-                    UnityEngine.Object.Destroy(
-                        remoteEnemy.GameObject
-                    );
-                }
-            }
-
-            remoteEnemies.Clear();
-            hostEnemies.Clear();
-
-            nextEnemyId = 1;
-            nextSnapshotId = 1;
-            lastReceivedSnapshotId = -1;
-            sendTimer = 0f;
             initialized = false;
-
-            if (Instance == this)
-                Instance = null;
+            connection.OnPacketReceived -= HandlePacket;
+            foreach (int id in new List<int>(remoteEnemies.Keys)) RemoveRemoteEnemy(id);
+            if (stagingRoot != null) UnityEngine.Object.Destroy(stagingRoot);
+            hostEnemies.Clear();
+            hostEnemiesById.Clear();
+            pendingDamage.Clear();
+            damageHistory.Clear();
+            if (Instance == this) Instance = null;
         }
     }
 }

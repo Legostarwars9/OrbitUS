@@ -3,6 +3,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Threading.Tasks;
 using System.Collections.Generic;
+using System.Collections.Concurrent;
 
 namespace Orbit_Us
 {
@@ -10,6 +11,9 @@ namespace Orbit_Us
     {
         private UdpClient udpClient;
         private bool connected;
+        private readonly ConcurrentQueue<NetworkPacket> receivedPackets = new ConcurrentQueue<NetworkPacket>();
+        private DateTime lastConnectSent;
+        public bool HostConnection { get; set; }
 
         private string serverAddress;
         private int serverPort;
@@ -62,48 +66,19 @@ namespace Orbit_Us
 
             try
             {
-                using (System.IO.MemoryStream stream =
-                       new System.IO.MemoryStream())
-                using (System.IO.BinaryWriter writer =
-                       new System.IO.BinaryWriter(stream))
+                foreach (byte[] chunk in EnemySnapshotCodec.Encode(enemies, snapshotId))
                 {
-                    writer.Write(snapshotId);
-                    writer.Write(enemies.Count);
-
-                    foreach (EnemyTransformData enemy
-                             in enemies)
+                    if (!connected) return;
+                    byte[] data = PacketSerializer.Serialize(new NetworkPacket
                     {
-                        byte[] data =
-                            enemy.Serialize();
-
-                        writer.Write(data.Length);
-                        writer.Write(data);
-                    }
-
-                    NetworkPacket packet =
-                        new NetworkPacket
-                        {
-                            Type =
-                                PacketType.EnemySnapshot,
-
-                            Data =
-                                stream.ToArray()
-                        };
-
-                    byte[] packetData =
-                        PacketSerializer.Serialize(packet);
-
-                    await udpClient.SendAsync(
-                        packetData,
-                        packetData.Length
-                    );
+                        Type = PacketType.EnemySnapshot, Data = chunk
+                    });
+                    await udpClient.SendAsync(data, data.Length);
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine(
-                    $"UDP enemy snapshot send failed: {ex.Message}"
-                );
+                Console.WriteLine($"UDP enemy snapshot send failed: {ex.Message}");
             }
         }
 
@@ -114,15 +89,12 @@ namespace Orbit_Us
                 if (!connected)
                     return;
 
-                NetworkPacket packet =
-                    new NetworkPacket
-                    {
-                        Type =
-                            PacketType.PlayerConnect,
-
-                        Data =
-                            new byte[0]
-                    };
+                lastConnectSent = DateTime.UtcNow;
+                NetworkPacket packet = new NetworkPacket
+                {
+                    Type = PacketType.PlayerConnect,
+                    Data = new byte[] { HostConnection ? (byte)1 : (byte)0 }
+                };
 
                 byte[] data =
                     PacketSerializer.Serialize(
@@ -146,43 +118,38 @@ namespace Orbit_Us
             }
         }
 
-        public async Task SendEnemyDamage(
-            int enemyId,
-            float damage)
+        public Task SendEnemyDamage(int enemyId, float damage)
         {
-            if (!connected)
-                return;
+            // Keep the public entry point on the reliable request path.
+            EnemyReplicator.Instance?.SendEnemyDamage(enemyId, damage);
+            return Task.CompletedTask;
+        }
 
+        public Task SendEnemyDamageRequest(EnemyDamageData request)
+        {
+            return SendPacket(new NetworkPacket
+            {
+                Type = PacketType.EnemyDamage, Data = request.Serialize()
+            });
+        }
+
+        public Task SendEnemyDamageAcknowledgement(int playerId, int requestId)
+        {
+            byte[] data = new byte[8];
+            Buffer.BlockCopy(BitConverter.GetBytes(playerId), 0, data, 0, 4);
+            Buffer.BlockCopy(BitConverter.GetBytes(requestId), 0, data, 4, 4);
+            return SendPacket(new NetworkPacket { Type = PacketType.EnemyDamageAck, Data = data });
+        }
+
+        private async Task SendPacket(NetworkPacket packet)
+        {
+            if (!connected) return;
             try
             {
-                using (System.IO.MemoryStream stream =
-                       new System.IO.MemoryStream())
-                using (System.IO.BinaryWriter writer =
-                       new System.IO.BinaryWriter(stream))
-                {
-                    writer.Write(enemyId);
-                    writer.Write(damage);
-
-                    NetworkPacket packet =
-                        new NetworkPacket
-                        {
-                            Type = PacketType.EnemyDamage,
-                            Data = stream.ToArray()
-                        };
-
-                    byte[] data =
-                        PacketSerializer.Serialize(packet);
-
-                    await udpClient.SendAsync(
-                        data,
-                        data.Length);
-                }
+                byte[] data = PacketSerializer.Serialize(packet);
+                await udpClient.SendAsync(data, data.Length);
             }
-            catch (Exception ex)
-            {
-                Console.WriteLine(
-                    $"UDP enemy damage send failed: {ex.Message}");
-            }
+            catch (Exception ex) { Console.WriteLine($"UDP send failed: {ex.Message}"); }
         }
 
         public async Task SendPlayerTransform(
@@ -239,64 +206,41 @@ namespace Orbit_Us
 
         private async Task ReceiveLoop()
         {
-            try
+            UdpClient socket = udpClient;
+            while (connected && ReferenceEquals(socket, udpClient))
             {
-                while (connected)
+                try
                 {
-                    UdpReceiveResult result =
-                        await udpClient.ReceiveAsync();
-
-                    NetworkPacket packet =
-                        PacketSerializer.Deserialize(
-                            result.Buffer
-                        );
-
-                    //Console.WriteLine(
-                    //    $"UDP packet received: {packet.Type}"
-                    //);
-
-                    if (packet.Type ==
-                        PacketType.PlayerConnected)
-                    {
-                        if (packet.Data.Length >= 4)
-                        {
-                            int playerId =
-                                BitConverter.ToInt32(
-                                    packet.Data,
-                                    0
-                                );
-
-                            if (LocalPlayerId == -1)
-                            {
-                                LocalPlayerId =
-                                    playerId;
-
-                                Console.WriteLine(
-                                    $"Assigned local player ID: {LocalPlayerId}"
-                                );
-                            }
-                            else
-                            {
-                                Console.WriteLine(
-                                    $"Player connected: {playerId}"
-                                );
-                            }
-                        }
-                    }
-
-                    OnPacketReceived?.Invoke(
-                        packet
-                    );
+                    UdpReceiveResult result = await socket.ReceiveAsync();
+                    NetworkPacket packet = PacketSerializer.Deserialize(result.Buffer);
+                    if (connected && ReferenceEquals(socket, udpClient))
+                        receivedPackets.Enqueue(packet);
+                }
+                catch (ObjectDisposedException) { break; }
+                catch (Exception ex)
+                {
+                    if (!connected || !ReferenceEquals(socket, udpClient)) break;
+                    Console.WriteLine($"UDP receive failed: {ex.Message}");
                 }
             }
-            catch (Exception ex)
+        }
+
+        // Called by OrbitUs.Update: Unity objects and replica dictionaries are
+        // touched only on the Unity thread, regardless of async continuations.
+        public void DispatchPendingPackets()
+        {
+            if (!connected) return;
+            if (LocalPlayerId == -1 && (DateTime.UtcNow - lastConnectSent).TotalSeconds >= 1)
+                _ = SendPlayerConnect();
+
+            int processed = 0;
+            while (processed++ < 4096 && receivedPackets.TryDequeue(out NetworkPacket packet))
             {
-                if (connected)
-                {
-                    Console.WriteLine(
-                        $"UDP connection lost: {ex.Message}"
-                    );
-                }
+                if (packet.Type == PacketType.PlayerAssigned && packet.Data.Length == 4 && LocalPlayerId == -1)
+                    LocalPlayerId = BitConverter.ToInt32(packet.Data, 0);
+                if (LocalPlayerId == -1) continue;
+                try { OnPacketReceived?.Invoke(packet); }
+                catch (Exception ex) { Console.WriteLine($"UDP packet handler failed: {ex}"); }
             }
         }
 
@@ -315,6 +259,7 @@ namespace Orbit_Us
             }
 
             udpClient = null;
+            while (receivedPackets.TryDequeue(out _)) { }
         }
     }
 }

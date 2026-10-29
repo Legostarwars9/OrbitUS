@@ -11,7 +11,9 @@ namespace Orbit_Us
         GameState,
         KeepAlive,
         KeepAliveResponse,
-        PlayerConnected
+        PlayerConnected,
+        EnemyDamageAck,
+        PlayerAssigned
     }
 
     public class NetworkPacket

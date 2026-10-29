@@ -46,6 +46,8 @@
         <Compile Include="EnemyReplicator.cs" />
         <Compile Include="EnemySpawnPatch.cs" />
         <Compile Include="EnemyTransformData.cs" />
+        <Compile Include="EnemySnapshotCodec.cs" />
+        <Compile Include="EnemyDamageData.cs" />
         <Compile Include="NetworkConnection.cs" />
         <Compile Include="NetworkManager.cs" />
         <Compile Include="NetworkPacket.cs" />
@@ -132,7 +134,7 @@
         </Reference>
         <UnityReferences Include="$(OrbitUsGameDir)/OrbitousLinux_Data/Managed/UnityEngine*.dll" />
     </ItemGroup>
-    <Target Name="CopyModToBepInEx" AfterTargets="Build">
+    <Target Name="CopyModToBepInEx" AfterTargets="Build" Condition="'$(CopyModToBepInExEnabled)' != 'false'">
         <Copy
             SourceFiles="$(TargetPath)"
             DestinationFolder="$(OrbitUsGameDir)/BepInEx/plugins/"

@@ -10,6 +10,7 @@ namespace Orbit_Us
     {
         private UdpClient udpServer;
         private bool running;
+        private IPEndPoint hostEndpoint;
 
         private int nextPlayerId = 1;
 
@@ -34,12 +35,16 @@ namespace Orbit_Us
 
         private async Task Listen()
         {
-            while (running)
+            UdpClient socket = udpServer;
+            while (running && ReferenceEquals(socket, udpServer))
             {
                 try
                 {
                     UdpReceiveResult result =
-                        await udpServer.ReceiveAsync();
+                        await socket.ReceiveAsync();
+
+                    if (!running || !ReferenceEquals(socket, udpServer))
+                        break;
 
                     IPEndPoint sender =
                         result.RemoteEndPoint;
@@ -60,6 +65,17 @@ namespace Orbit_Us
                     if (packet.Type ==
                         PacketType.PlayerConnect)
                     {
+                        if (packet.Data.Length != 1 || packet.Data[0] > 1)
+                            continue;
+                        if (packet.Data[0] == 1)
+                        {
+                            // Only the host's explicit loopback connection may
+                            // publish snapshots or acknowledge applied damage.
+                            if (!IPAddress.IsLoopback(sender.Address) ||
+                                (hostEndpoint != null && !hostEndpoint.Equals(sender)))
+                                continue;
+                            hostEndpoint = sender;
+                        }
                         await HandlePlayerConnect(sender);
                         continue;
                     }
@@ -114,6 +130,8 @@ namespace Orbit_Us
                     if (packet.Type ==
                         PacketType.EnemySnapshot)
                     {
+                        if (hostEndpoint == null || !hostEndpoint.Equals(sender))
+                            continue;
                         await Broadcast(
                             result.Buffer,
                             sender
@@ -125,15 +143,29 @@ namespace Orbit_Us
                     if (packet.Type ==
                         PacketType.EnemyDamage)
                     {
-                        // The host receives the damage packet through the same
-                        // UDP connection as every other connected player.
-                        // Clients ignore it; the host applies the authoritative damage.
-                        await Broadcast(
-                            result.Buffer,
-                            sender
-                        );
+                        if (hostEndpoint == null || hostEndpoint.Equals(sender))
+                            continue;
+                        var damage = EnemyDamageData.Deserialize(packet.Data);
+                        damage.PlayerId = clients[sender];
+                        byte[] data = PacketSerializer.Serialize(new NetworkPacket
+                        {
+                            Type = PacketType.EnemyDamage, Data = damage.Serialize()
+                        });
+                        await socket.SendAsync(data, data.Length, hostEndpoint);
 
                         continue;
+                    }
+
+                    if (packet.Type == PacketType.EnemyDamageAck &&
+                        hostEndpoint != null && hostEndpoint.Equals(sender) && packet.Data.Length == 8)
+                    {
+                        int playerId = BitConverter.ToInt32(packet.Data, 0);
+                        foreach (var client in new List<KeyValuePair<IPEndPoint, int>>(clients))
+                            if (client.Value == playerId)
+                            {
+                                await socket.SendAsync(result.Buffer, result.Buffer.Length, client.Key);
+                                break;
+                            }
                     }
                 }
                 catch (Exception ex)
@@ -159,6 +191,11 @@ namespace Orbit_Us
                     $"UDP player {existingId} already connected."
                 );
 
+                byte[] existingAssignment = PacketSerializer.Serialize(new NetworkPacket
+                {
+                    Type = PacketType.PlayerAssigned, Data = BitConverter.GetBytes(existingId)
+                });
+                await udpServer.SendAsync(existingAssignment, existingAssignment.Length, sender);
                 await SendPlayerConnected(
                     existingId,
                     sender
@@ -184,6 +221,11 @@ namespace Orbit_Us
             );
 
             // Tell the new player their own ID.
+            byte[] assignment = PacketSerializer.Serialize(new NetworkPacket
+            {
+                Type = PacketType.PlayerAssigned, Data = BitConverter.GetBytes(playerId)
+            });
+            await udpServer.SendAsync(assignment, assignment.Length, sender);
             await SendPlayerConnected(
                 playerId,
                 sender
@@ -302,6 +344,7 @@ namespace Orbit_Us
         public void Stop()
         {
             running = false;
+            hostEndpoint = null;
 
             clients.Clear();
 

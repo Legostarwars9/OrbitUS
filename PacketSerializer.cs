@@ -19,11 +19,15 @@ namespace Orbit_Us
         }
         public static NetworkPacket Deserialize(byte[] data)
         {
+            if (data == null || data.Length < 8)
+                throw new InvalidDataException("Incomplete packet header.");
             using (MemoryStream stream = new MemoryStream(data))
             using (BinaryReader reader = new BinaryReader(stream))
             {
                 PacketType type = (PacketType)reader.ReadInt32();
                 int dataLength = reader.ReadInt32();
+                if (!Enum.IsDefined(typeof(PacketType), type) || dataLength < 0 || dataLength != data.Length - 8)
+                    throw new InvalidDataException("Invalid packet type or length.");
                 byte[] packetData = reader.ReadBytes(dataLength);
 
                 return new NetworkPacket
