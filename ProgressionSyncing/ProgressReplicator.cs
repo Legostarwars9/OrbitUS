@@ -36,6 +36,8 @@ namespace Orbit_Us
         private GameObject staging;
         private ProgressState latest;
         private int nextPiece = 1, nextRequest = 1, nextSnapshot = 1, ending;
+        private readonly EndingPresentation endingPresentation=new EndingPresentation();
+        public void NotifyEndingEffect(string name)=>endingPresentation.Notify(name);
         private bool initialized, sending, applying, wasWarped, transmissionBusy, needsApply;
         private float timer, retryTimer, scanTimer;
         private int lastReward;
@@ -53,7 +55,7 @@ namespace Orbit_Us
         }
         private void Refresh()
         {
-            var current=UnityEngine.Object.FindObjectOfType<storyManager>();
+            var current=UnityEngine.Object.FindObjectOfType<storyManager>(true);
             if(current!=story)
             {
                 story=current; player=story!=null?story.player:null; bosses=story!=null?story.bossManager:null;
@@ -295,6 +297,7 @@ namespace Orbit_Us
                 state.InGameStuff=singularity.inGameStuff.activeSelf;state.SingularityEnabled=singularity.enabled;
                 state.FlowX=singularity.flow.x;state.FlowY=singularity.flow.y;state.FlowSpeed=singularity.flowSpeed;state.StayForce=singularity.playerStayForce;
             }
+            state.Effects=endingPresentation.Capture(warper,singularity);
             var missions=(List<bool>)checklist.GetValue(story);
             for(int i=0;i<missions.Count;i++) if(missions[i]) state.Checklist|=1<<i;
             if(track.target!=null)
@@ -377,6 +380,7 @@ namespace Orbit_Us
                         singularity.inGameStuff.SetActive(state.InGameStuff);singularity.enabled=state.SingularityEnabled;
                         singularity.flow=new Vector2(state.FlowX,state.FlowY);singularity.flowSpeed=state.FlowSpeed;singularity.playerStayForce=state.StayForce;
                     }
+                    endingPresentation.Apply(state.Effects,warper,singularity);
                 }
                 if(singularity!=null) {singularity.badEndingScreen.SetActive(state.BadEndingScreen);singularity.finalQuitButton.SetActive(state.FinalQuit);}
                 ApplyPieces(state);ApplyReferences(state);
@@ -439,6 +443,9 @@ namespace Orbit_Us
         private void SetupWarp(ProgressState state)
         {
             if(warper==null) return;
+            warper.StopAllCoroutines();
+            if(warper.relCamEf!=null){warper.relCamEf.ResetEffects();warper.relCamEf.enabled=false;}
+            player.hp=player.hpMax;
             warper.warped=true;warper.blackHole.playerInside=true;warper.blackHoleScreen.SetActive(true);
             warper.barsAndStuff.SetActive(false);warper.compass.SetActive(false);warper.parallax.SetActive(false);
             warper.cameraMove.wantedSize=24;warper.cameraMove.maxZoom=28;
@@ -454,6 +461,7 @@ namespace Orbit_Us
         public void Destroy()
         {
             connection.OnPacketReceived-=HandlePacket;
+            if(IsClient)endingPresentation.Restore(warper);
             foreach(var p in pieces.Values) if(p.Blob!=null) {p.Blob.gameObject.SetActive(false);UnityEngine.Object.Destroy(p.Blob.gameObject);}
             pieces.Clear();pending.Clear();
             if(staging!=null) UnityEngine.Object.Destroy(staging);

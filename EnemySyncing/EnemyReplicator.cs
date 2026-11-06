@@ -4,7 +4,7 @@ using UnityEngine;
 
 namespace Orbit_Us
 {
-    public class EnemyReplicator
+    public partial class EnemyReplicator
     {
         private class RemoteEnemy
         {
@@ -14,7 +14,8 @@ namespace Orbit_Us
             public float TargetRotation;
             public float TargetHP;
             public float TargetHeadHP;
-            public int MissingSnapshots;
+            public int MissingSnapshots,PrefabType;
+            public List<EnemyNodePose> Nodes=new List<EnemyNodePose>();
         }
 
         private readonly NetworkUDPConnection connection;
@@ -83,6 +84,7 @@ namespace Orbit_Us
             {
                 if (waveManager != null) waveManager.StopAllCoroutines();
                 RemoveUnauthorizedClientEnemies();
+                RemoveUnauthorizedParts();
                 UpdateRemoteEnemies();
                 retryTimer += Time.unscaledDeltaTime;
                 if (retryTimer >= 0.2f)
@@ -103,7 +105,7 @@ namespace Orbit_Us
             // randomly changing wave pools on each machine. Never use live clones.
             foreach (var prefab in Resources.FindObjectsOfTypeAll<GameObject>())
             {
-                if (prefab == null || prefab.scene.IsValid() || prefab.GetComponent<enemy>() == null)
+                if (prefab == null || prefab.scene.IsValid() || (prefab.GetComponent<enemy>() == null && prefab.GetComponent<plantFoot>()==null && prefab.GetComponent<wormPart>()==null))
                     continue;
                 string name = prefab.name;
                 int type = StableType(name);
@@ -131,6 +133,18 @@ namespace Orbit_Us
 
         private int GetEnemyType(GameObject enemyObject)
         {
+            var boss=bossManager.Instance;
+            GameObject known=null;
+            if(boss!=null)
+            {
+                if(enemyObject.GetComponent<plantFoot>()!=null)known=boss.plantLeg;
+                else if(enemyObject.GetComponent<plantBoss>()!=null)known=boss.plantBoss;
+                else if(enemyObject.GetComponent<wormShadow>()!=null)known=boss.shadowHead;
+                else if(enemyObject.GetComponent<worm>()!=null)known=boss.wormHead;
+                else if(enemyObject.GetComponent<planetBoss>()!=null)known=boss.planetBoss;
+                else if(enemyObject.GetComponent<hunterController>()!=null)known=boss.hunterBoss;
+            }
+            if(known!=null)return StableType(known.name);
             string name = enemyObject.name.Replace("(Clone)", "").Trim();
             if (prefabTypes.TryGetValue(name, out int type)) return type;
             // Some scripts rename children (e.g. "node 2"). Only use a structural
@@ -193,7 +207,7 @@ namespace Orbit_Us
                 var currentEnemies = new HashSet<enemy>();
                 foreach (var current in new List<enemy>(enemyManager.instance.GetEnemies()))
                 {
-                    if (current == null || !currentEnemies.Add(current)) continue;
+                    if (current == null || HasBossAncestor(current.transform.parent) || !currentEnemies.Add(current)) continue;
                     if (!hostEnemies.TryGetValue(current, out int id))
                     {
                         id = nextEnemyId++;
@@ -210,7 +224,8 @@ namespace Orbit_Us
                         X = current.transform.position.x, Y = current.transform.position.y,
                         HP = h != null ? h.hp : 0f,
                         HeadHP = w != null ? w.headHp : 0f,
-                        Rotation = current.transform.eulerAngles.z
+                        Rotation = current.transform.eulerAngles.z,
+                        Nodes=CaptureArticulation(current.gameObject,type)
                     });
                 }
                 foreach (var pair in new List<KeyValuePair<enemy, int>>(hostEnemies))
@@ -219,9 +234,12 @@ namespace Orbit_Us
                     hostEnemies.Remove(pair.Key);
                     hostEnemiesById.Remove(pair.Value);
                 }
+                AppendDetachedParts(snapshot,currentEnemies);
                 // Target at most 200 snapshot datagrams/sec before relay fan-out.
                 // Large waves trade update frequency for bounded traffic.
-                snapshotInterval = Mathf.Max(SendRate, Mathf.Ceil(snapshot.Count / 40f) / 200f);
+                int poseBytes=snapshot.Count*32;
+                foreach(var data in snapshot)poseBytes+=data.Nodes.Count*140;
+                snapshotInterval = Mathf.Max(SendRate,poseBytes/200000f);
                 await connection.SendEnemySnapshot(snapshot, nextSnapshotId++);
             }
             catch (Exception ex) { Debug.LogError($"[Orbit-Us] Enemy snapshot send failed: {ex}"); }
@@ -268,7 +286,7 @@ namespace Orbit_Us
                     remoteIds.Remove(remote.GameObject);
                 var spawned = SpawnEnemy(data.Type, new Vector2(data.X, data.Y));
                 if (spawned == null) return;
-                remote = new RemoteEnemy { GameObject = spawned, Health = spawned.GetComponent<health>() };
+                remote = new RemoteEnemy { GameObject = spawned, Health = spawned.GetComponent<health>(), PrefabType=data.Type };
                 // Add() throws after Instantiate when an old entry survives a
                 // destroyed object, leaking another clone on every snapshot.
                 remoteEnemies[data.EnemyId] = remote;
@@ -276,11 +294,14 @@ namespace Orbit_Us
                 remote.TargetHP = data.HP;
                 remote.TargetHeadHP = data.HeadHP;
                 RestoreHealth(remote);
+                remote.Nodes=data.Nodes;
+                ApplyArticulation(remote,true);
                 spawned.transform.SetParent(null, true);
                 spawned.SetActive(true);
             }
             remote.TargetPosition = new Vector2(data.X, data.Y);
             remote.TargetRotation = data.Rotation;
+            remote.Nodes=data.Nodes;
             CaptureRemoteDamage(remote.Health);
             remote.TargetHP = data.HP;
             remote.TargetHeadHP = data.HeadHP;
@@ -297,7 +318,8 @@ namespace Orbit_Us
         // host HP before returning so repeated death checks cannot resubmit a hit.
         public bool CaptureRemoteDamage(health target)
         {
-            if (target == null || !TryGetRemoteEnemyId(target.gameObject, out int id)) return false;
+            if (target == null) return false;
+            if(!TryGetRemoteEnemyId(target.gameObject,out int id))return CaptureChildDamage(target);
             RemoteEnemy remote = remoteEnemies[id];
             float damage = Mathf.Max(0f, remote.TargetHP - target.hp);
             var w = target as worm;
@@ -346,23 +368,21 @@ namespace Orbit_Us
                 history = new DamageRequestHistory();
                 damageHistory.Add(request.PlayerId, history);
             }
-            if (history.Accept(request.RequestId) &&
-                hostEnemiesById.TryGetValue(request.EnemyId, out enemy target) && target != null)
+            if(history.Accept(request.RequestId))
             {
-                var h = target.GetComponent<health>();
-                if (h != null && !h.dead)
+                health h=null;
+                if(hostEnemiesById.TryGetValue(request.EnemyId,out enemy target) && target!=null)h=target.GetComponent<health>();
+                else extraHealthById.TryGetValue(request.EnemyId,out h);
+                if(h!=null && !h.dead)
                 {
-                    var w = h as worm;
-                    if (w != null && !(w is wormShadow))
+                    var w=h as worm;
+                    if(w!=null && !(w is wormShadow))
                     {
-                        w.headHp = Mathf.Max(0f, w.headHp - request.HeadDamage - request.Damage);
-                        w.hp = w.headHp;
-                        foreach (var segment in w.tailHealth)
-                            if (segment != null) w.hp += segment.hp;
+                        w.headHp=Mathf.Max(0,w.headHp-request.HeadDamage-request.Damage);w.hp=w.headHp;
+                        foreach(var segment in w.tailHealth)if(segment!=null)w.hp+=segment.hp;
                         w.CheckIfDead();
                     }
-                    else if (request.Damage > 0f)
-                        h.HandleDamageImpulse(request.Damage);
+                    else if(request.Damage>0)h.HandleDamageImpulse(request.Damage);
                 }
             }
             // ACK duplicates and dead targets too: these requests are finished.
@@ -383,6 +403,7 @@ namespace Orbit_Us
                 stagingRoot.SetActive(false);
             }
             var spawned = UnityEngine.Object.Instantiate(prefab, position, prefab.transform.rotation, stagingRoot.transform);
+            spawned.AddComponent<EnemyReplicaMarker>();
             try { MakeRemoteEnemyServerControlled(spawned); }
             catch
             {
@@ -402,6 +423,7 @@ namespace Orbit_Us
                 behaviour.StopAllCoroutines();
                 behaviour.enabled = false;
             }
+            foreach(var joint in spawned.GetComponentsInChildren<Joint2D>(true))joint.enabled=false;
             foreach (var rb in spawned.GetComponentsInChildren<Rigidbody2D>(true))
             {
                 rb.velocity = Vector2.zero;
@@ -421,6 +443,7 @@ namespace Orbit_Us
 
         private void UpdateRemoteEnemies()
         {
+            foreach(var h in new List<health>(remoteChildHealth.Keys))if(h==null)remoteChildHealth.Remove(h);
             foreach (var remote in remoteEnemies.Values)
             {
                 if (remote.GameObject == null) continue;
@@ -430,12 +453,14 @@ namespace Orbit_Us
                     new Vector3(remote.TargetPosition.x, remote.TargetPosition.y, transform.position.z), 20f * Time.deltaTime);
                 transform.rotation = Quaternion.Lerp(transform.rotation,
                     Quaternion.Euler(0f, 0f, remote.TargetRotation), 20f * Time.deltaTime);
+                ApplyArticulation(remote,false);
             }
         }
 
         private void RemoveRemoteEnemy(int enemyId)
         {
             if (!remoteEnemies.TryGetValue(enemyId, out RemoteEnemy remote)) return;
+            if(remote.GameObject!=null)foreach(var h in remote.GameObject.GetComponentsInChildren<health>(true))remoteChildHealth.Remove(h);
             if (!ReferenceEquals(remote.GameObject, null)) remoteIds.Remove(remote.GameObject);
             if (remote.GameObject != null)
             {
@@ -450,12 +475,14 @@ namespace Orbit_Us
             if (obj == null) return 0;
             if (!isHost) return remoteIds.TryGetValue(obj, out int remote) ? remote : 0;
             var e = obj.GetComponent<enemy>();
-            return e != null && hostEnemies.TryGetValue(e, out int id) ? id : 0;
+            if(e!=null && hostEnemies.TryGetValue(e,out int id))return id;
+            var h=obj.GetComponent<health>();return h!=null && extraHealthIds.TryGetValue(h,out int extra)?extra:0;
         }
         public GameObject ResolveObject(int id)
         {
             if (!isHost) return remoteEnemies.TryGetValue(id, out RemoteEnemy remote) ? remote.GameObject : null;
-            return hostEnemiesById.TryGetValue(id, out enemy e) && e != null ? e.gameObject : null;
+            if(hostEnemiesById.TryGetValue(id,out enemy e) && e!=null)return e.gameObject;
+            return extraHealthById.TryGetValue(id,out health h) && h!=null?h.gameObject:null;
         }
 
         public void Destroy()
@@ -465,7 +492,7 @@ namespace Orbit_Us
             foreach (int id in new List<int>(remoteEnemies.Keys)) RemoveRemoteEnemy(id);
             if (stagingRoot != null) UnityEngine.Object.Destroy(stagingRoot);
             hostEnemies.Clear();
-            hostEnemiesById.Clear();
+            hostEnemiesById.Clear();extraHealthIds.Clear();extraHealthById.Clear();remoteChildHealth.Clear();
             pendingDamage.Clear();
             damageHistory.Clear();
             if (Instance == this) Instance = null;

@@ -41,8 +41,11 @@ namespace Orbit_Us
             IPEndPoint hostEndpoint = null;
             var lastSeen = new Dictionary<IPEndPoint, DateTime>();
             // The codec caps each snapshot at 8 MiB; retain only three IDs.
+            var enemySnapshots=new SortedDictionary<int,CachedPlanetSnapshot>();
+            var lastEnemyRepair=new Dictionary<IPEndPoint,DateTime>();
             var planetSnapshots = new SortedDictionary<int, CachedPlanetSnapshot>();
             var lastPlanetRepair = new Dictionary<IPEndPoint, DateTime>();
+            var combatFrames=new Dictionary<IPEndPoint,CombatSnapshotCodec.Assembler>();
             var progressSnapshots = new SortedDictionary<int, CachedPlanetSnapshot>();
             var lastProgressRepair = new Dictionary<IPEndPoint, DateTime>();
             Task<UdpReceiveResult> receive = socket.ReceiveAsync();
@@ -62,13 +65,14 @@ namespace Orbit_Us
                             int departed = clients[endpoint];
                             clients.Remove(endpoint);
                             sequences.Remove(endpoint);
+                            combatFrames.Remove(endpoint);
                             lastSeen.Remove(endpoint);
-                            lastPlanetRepair.Remove(endpoint);
+                            lastPlanetRepair.Remove(endpoint);lastEnemyRepair.Remove(endpoint);
                             lastProgressRepair.Remove(endpoint);
                             if (endpoint.Equals(hostEndpoint))
                             {
                                 hostEndpoint = null;
-                                planetSnapshots.Clear();
+                                planetSnapshots.Clear();enemySnapshots.Clear();
                                 progressSnapshots.Clear();
                             }
                             await Broadcast(socket, clients, PacketSerializer.Serialize(new NetworkPacket
@@ -148,13 +152,14 @@ namespace Orbit_Us
                         int departed = clients[sender];
                         clients.Remove(sender);
                         lastSeen.Remove(sender);
-                        lastPlanetRepair.Remove(sender);
+                        lastPlanetRepair.Remove(sender);lastEnemyRepair.Remove(sender);
                         lastProgressRepair.Remove(sender);
                         sequences.Remove(sender);
+                        combatFrames.Remove(sender);
                         if (sender.Equals(hostEndpoint))
                         {
                             hostEndpoint = null;
-                            planetSnapshots.Clear();
+                            planetSnapshots.Clear();enemySnapshots.Clear();
                                 progressSnapshots.Clear();
                         }
                         lock (lifecycle)
@@ -208,17 +213,47 @@ namespace Orbit_Us
                             sender
                         );
                     }
-                    if (packet.Type ==
-                        PacketType.EnemySnapshot)
+                    if (packet.Type == PacketType.EnemySnapshot)
                     {
-                        if (hostEndpoint == null || !hostEndpoint.Equals(sender))
+                        if (hostEndpoint == null || !hostEndpoint.Equals(sender) ||
+                            !EnemySnapshotCodec.TryReadChunkHeader(packet.Data, out int snapshotId,
+                                out int chunkIndex, out int chunkCount)) continue;
+                        if (!enemySnapshots.TryGetValue(snapshotId, out CachedPlanetSnapshot cached))
+                        {
+                            if (enemySnapshots.Count >= 3)
+                            {
+                                int oldest = int.MaxValue;
+                                foreach (int id in enemySnapshots.Keys) { oldest = id; break; }
+                                if (snapshotId < oldest) continue;
+                                enemySnapshots.Remove(oldest);
+                            }
+                            cached = new CachedPlanetSnapshot { Chunks = new byte[chunkCount][] };
+                            enemySnapshots.Add(snapshotId, cached);
+                        }
+                        if (cached.Chunks.Length != chunkCount) continue;
+                        cached.Chunks[chunkIndex] = result.Buffer;
+                        await Broadcast(socket, clients, result.Buffer, sender);
+                        continue;
+                    }
+                    if (packet.Type == PacketType.EnemySnapshotRequest)
+                    {
+                        if (hostEndpoint == null || hostEndpoint.Equals(sender) ||
+                            packet.Data.Length < 8 || packet.Data.Length > 260 || packet.Data.Length % 4 != 0)
                             continue;
-                        await Broadcast(
-                            socket, clients,
-                            result.Buffer,
-                            sender
-                        );
-
+                        DateTime now = DateTime.UtcNow;
+                        if (lastEnemyRepair.TryGetValue(sender, out DateTime previousRepair) &&
+                            (now - previousRepair).TotalSeconds < 0.25) continue;
+                        lastEnemyRepair[sender] = now;
+                        int snapshotId = BitConverter.ToInt32(packet.Data, 0);
+                        if (!enemySnapshots.TryGetValue(snapshotId, out CachedPlanetSnapshot cached)) continue;
+                        var sent = new HashSet<int>();
+                        for (int offset = 4; offset < packet.Data.Length; offset += 4)
+                        {
+                            int index = BitConverter.ToInt32(packet.Data, offset);
+                            if (index < 0 || index >= cached.Chunks.Length || !sent.Add(index)) continue;
+                            byte[] chunk = cached.Chunks[index];
+                            if (chunk != null) await socket.SendAsync(chunk, chunk.Length, sender);
+                        }
                         continue;
                     }
 
@@ -308,6 +343,36 @@ namespace Orbit_Us
                             if (chunk != null) await socket.SendAsync(chunk, chunk.Length, sender);
                         }
                         continue;
+                    }
+
+                    if(packet.Type==PacketType.CombatSnapshot)
+                    {
+                        if(CombatSnapshotCodec.ReadOwner(packet.Data)!=clients[sender])continue;
+                        if(!combatFrames.TryGetValue(sender,out CombatSnapshotCodec.Assembler assembler))
+                        {assembler=new CombatSnapshotCodec.Assembler();combatFrames.Add(sender,assembler);}
+                        if(!assembler.TryAdd(packet.Data,out CombatFrame frame))continue;
+                        bool authority=hostEndpoint!=null && hostEndpoint.Equals(sender);
+                        if(frame.Authority!=authority)continue;
+                        bool valid=true;
+                        if(!authority)foreach(var entity in frame.Entities) if(entity.Kind!=0 || !entity.PlayerSafe){valid=false;break;}
+                        if(!valid)continue;
+                        foreach(var chunk in assembler.CompletedChunks)
+                            await Broadcast(socket,clients,PacketSerializer.Serialize(new NetworkPacket {Type=PacketType.CombatSnapshot,Data=chunk}),sender);
+                        continue;
+                    }
+                    if(packet.Type==PacketType.CombatHit && hostEndpoint!=null && hostEndpoint.Equals(sender))
+                    {
+                        var hit=CombatHit.Deserialize(packet.Data);
+                        foreach(var client in clients)if(client.Value==hit.PlayerId)
+                        {await socket.SendAsync(result.Buffer,result.Buffer.Length,client.Key);break;}
+                        continue;
+                    }
+                    if(packet.Type==PacketType.CombatHitAck && hostEndpoint!=null && !hostEndpoint.Equals(sender) && packet.Data.Length==4)
+                    {
+                        byte[] ack=new byte[8];Buffer.BlockCopy(BitConverter.GetBytes(clients[sender]),0,ack,0,4);
+                        Buffer.BlockCopy(packet.Data,0,ack,4,4);
+                        byte[] bytes=PacketSerializer.Serialize(new NetworkPacket {Type=PacketType.CombatHitAck,Data=ack});
+                        await socket.SendAsync(bytes,bytes.Length,hostEndpoint);continue;
                     }
 
                     if (packet.Type == PacketType.ProgressAction)

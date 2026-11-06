@@ -17,6 +17,8 @@ namespace Orbit_Us
         private byte[][] latestPlanetSnapshot;
         private readonly ProgressSnapshotCodec.Assembler progressSnapshots = new ProgressSnapshotCodec.Assembler();
         private byte[][] latestProgressSnapshot;
+        private readonly Dictionary<int, CombatSnapshotCodec.Assembler> combat = new Dictionary<int, CombatSnapshotCodec.Assembler>();
+        private readonly Dictionary<int, byte[][]> latestCombat = new Dictionary<int, byte[][]>();
         private const int MaxEvents = 4096;
         private const int MaxPlayers = 256;
 
@@ -53,12 +55,24 @@ namespace Orbit_Us
                 {
                     if (progressSnapshots.TryAdd(packet.Data, out _)) latestProgressSnapshot = progressSnapshots.CompletedChunks;
                 }
+                else if (packet.Type == PacketType.CombatSnapshot)
+                {
+                    int owner=CombatSnapshotCodec.ReadOwner(packet.Data);
+                    if(owner<=0) return;
+                    if(!combat.TryGetValue(owner,out CombatSnapshotCodec.Assembler buffer))
+                    {
+                        if(combat.Count>=MaxPlayers) return;
+                        buffer=new CombatSnapshotCodec.Assembler();combat.Add(owner,buffer);
+                    }
+                    if(buffer.TryAdd(packet.Data,out _)) latestCombat[owner]=buffer.CompletedChunks;
+                }
                 else
                 {
                     if (packet.Type == PacketType.PlayerDisconnected && packet.Data.Length == 4)
                     {
                         int id = BitConverter.ToInt32(packet.Data, 0);
                         players.Remove(id);
+                        combat.Remove(id);latestCombat.Remove(id);
                         sequences.Remove(id);
                     }
                     // Damage and ACKs retry; drop overflow rather than retain an
@@ -73,6 +87,20 @@ namespace Orbit_Us
             lock (gate)
             {
                 int[] missing = planetSnapshots.GetMissingChunks(64, out int snapshotId);
+                if (missing.Length == 0) return null;
+                byte[] request = new byte[(missing.Length + 1) * 4];
+                Buffer.BlockCopy(BitConverter.GetBytes(snapshotId), 0, request, 0, 4);
+                for (int i = 0; i < missing.Length; i++)
+                    Buffer.BlockCopy(BitConverter.GetBytes(missing[i]), 0, request, (i + 1) * 4, 4);
+                return request;
+            }
+        }
+
+        public byte[] GetEnemyRepairRequest()
+        {
+            lock (gate)
+            {
+                int[] missing = snapshots.GetMissingChunks(64, out int snapshotId);
                 if (missing.Length == 0) return null;
                 byte[] request = new byte[(missing.Length + 1) * 4];
                 Buffer.BlockCopy(BitConverter.GetBytes(snapshotId), 0, request, 0, 4);
@@ -122,6 +150,9 @@ namespace Orbit_Us
                         result.Add(new NetworkPacket { Type = PacketType.ProgressSnapshot, Data = chunk });
                     latestProgressSnapshot = null;
                 }
+                foreach(var chunks in latestCombat.Values)
+                    foreach(var chunk in chunks) result.Add(new NetworkPacket {Type=PacketType.CombatSnapshot,Data=chunk});
+                latestCombat.Clear();
                 return result;
             }
         }

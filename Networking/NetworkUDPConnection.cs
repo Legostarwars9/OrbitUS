@@ -14,9 +14,12 @@ namespace Orbit_Us
         private uint transformSequence;
         private int sendingTransform;
         private int sendingPlanetSnapshot;
+        private int sendingCombat;
         private int sendingProgressSnapshot, sendingProgressRepair;
         private DateTime lastProgressRepair;
         private int sendingPlanetRepair;
+        private int sendingEnemyRepair;
+        private DateTime lastEnemyRepair;
         private DateTime lastPlanetRepair;
         private PendingPacketBuffer receivedPackets = new PendingPacketBuffer();
         private DateTime lastConnectSent;
@@ -147,6 +150,49 @@ namespace Orbit_Us
             }
             finally { Interlocked.Exchange(ref sendingPlanetRepair, 0); }
         }
+
+        private async Task RequestEnemyRepair(byte[] request)
+        {
+            UdpClient socket = udpClient;
+            if (!connected || socket == null ||
+                Interlocked.CompareExchange(ref sendingEnemyRepair, 1, 0) != 0) return;
+            try
+            {
+                byte[] data = PacketSerializer.Serialize(new NetworkPacket
+                {
+                    Type = PacketType.EnemySnapshotRequest, Data = request
+                });
+                await socket.SendAsync(data, data.Length).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                if (connected && ReferenceEquals(socket, udpClient))
+                    Console.WriteLine($"UDP enemy repair request failed: {ex.Message}");
+            }
+            finally { Interlocked.Exchange(ref sendingEnemyRepair, 0); }
+        }
+
+        public async Task SendCombatFrame(CombatFrame frame)
+        {
+            var socket=udpClient;
+            if(!connected || socket==null || LocalPlayerId<=0 || Interlocked.CompareExchange(ref sendingCombat,1,0)!=0)return;
+            frame.Owner=LocalPlayerId;frame.Authority=HostConnection;
+            try
+            {
+                var chunks=await Task.Run(()=>CombatSnapshotCodec.Encode(frame,frame.Sequence)).ConfigureAwait(false);
+                for(int i=0;i<chunks.Count;i++)
+                {
+                    if(!connected || !ReferenceEquals(socket,udpClient))return;
+                    byte[] bytes=PacketSerializer.Serialize(new NetworkPacket {Type=PacketType.CombatSnapshot,Data=chunks[i]});
+                    await socket.SendAsync(bytes,bytes.Length).ConfigureAwait(false);
+                    if((i+1)%16==0 && i+1<chunks.Count) await Task.Delay(80).ConfigureAwait(false);
+                }
+            }
+            catch(Exception ex){Console.WriteLine("Combat send failed: "+ex.Message);}
+            finally{Interlocked.Exchange(ref sendingCombat,0);}
+        }
+        public Task SendCombatHit(CombatHit hit)=>SendPacket(new NetworkPacket {Type=PacketType.CombatHit,Data=hit.Serialize()});
+        public Task SendCombatHitAck(int id)=>SendPacket(new NetworkPacket {Type=PacketType.CombatHitAck,Data=BitConverter.GetBytes(id)});
 
         public async Task SendProgressSnapshot(ProgressState state, int snapshotId)
         {
@@ -343,6 +389,13 @@ namespace Orbit_Us
                 lastPlanetRepair = DateTime.UtcNow;
                 byte[] request = receivedPackets.GetPlanetRepairRequest();
                 if (request != null) _ = RequestPlanetRepair(request);
+            }
+
+            if (!HostConnection && LocalPlayerId > 0 && (DateTime.UtcNow - lastEnemyRepair).TotalSeconds >= 0.5)
+            {
+                lastEnemyRepair = DateTime.UtcNow;
+                byte[] request = receivedPackets.GetEnemyRepairRequest();
+                if (request != null) _ = RequestEnemyRepair(request);
             }
 
             if (!HostConnection && LocalPlayerId > 0 && (DateTime.UtcNow - lastProgressRepair).TotalSeconds >= 0.5)

@@ -21,7 +21,11 @@ namespace Orbit_Us
         ProgressSnapshot,
         ProgressSnapshotRequest,
         ProgressAction,
-        ProgressActionAck
+        ProgressActionAck,
+        CombatSnapshot,
+        CombatHit,
+        CombatHitAck,
+        EnemySnapshotRequest
     }
 
     public class NetworkPacket

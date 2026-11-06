@@ -43,9 +43,15 @@
     </ItemGroup>
     <ItemGroup>
         <Compile Include="OrbitUs.cs" />
+        <Compile Include="CombatSyncing\CombatState.cs" />
+        <Compile Include="CombatSyncing\CombatSnapshotCodec.cs" />
+        <Compile Include="CombatSyncing\CombatReplicator.cs" />
+        <Compile Include="CombatSyncing\NetworkPilotRegistry.cs" />
+        <Compile Include="CombatSyncing\CombatSyncPatches.cs" />
         <Compile Include="ProgressionSyncing\ProgressState.cs" />
         <Compile Include="ProgressionSyncing\ProgressSnapshotCodec.cs" />
         <Compile Include="ProgressionSyncing\ProgressReplicator.cs" />
+        <Compile Include="ProgressionSyncing\EndingPresentation.cs" />
         <Compile Include="ProgressionSyncing\ProgressSyncPatches.cs" />
 
         <Compile Include="Networking\NetworkConnection.cs" />
@@ -58,6 +64,8 @@
         <Compile Include="Networking\PendingPacketBuffer.cs" />
 
         <Compile Include="EnemySyncing\EnemyReplicator.cs" />
+        <Compile Include="EnemySyncing\EnemyArticulation.cs" />
+        <Compile Include="EnemySyncing\EnemyPartPatches.cs" />
         <Compile Include="EnemySyncing\EnemySpawnPatch.cs" />
         <Compile Include="EnemySyncing\EnemyDamagePatch.cs" />
         <Compile Include="EnemySyncing\EnemyTransformData.cs" />
@@ -142,6 +150,10 @@
         </Reference>
         <Reference Include="UnityEngine.Physics2DModule">
             <HintPath>$(OrbitUsGameDir)/OrbitousLinux_Data/Managed/UnityEngine.Physics2DModule.dll</HintPath>
+        </Reference>
+        <Reference Include="Unity.RenderPipelines.Core.Runtime">
+            <HintPath>$(OrbitUsGameDir)/OrbitousLinux_Data/Managed/Unity.RenderPipelines.Core.Runtime.dll</HintPath>
+            <Private>False</Private>
         </Reference>
         <Reference Include="Unity.RenderPipelines.Universal.Runtime">
             <HintPath>$(OrbitUsGameDir)/OrbitousLinux_Data/Managed/Unity.RenderPipelines.Universal.Runtime.dll</HintPath>

@@ -1,4 +1,5 @@
 using System.IO;
+using System.Collections.Generic;
 
 namespace Orbit_Us
 {
@@ -11,6 +12,7 @@ namespace Orbit_Us
         public float HP;
         public float HeadHP;
         public float Rotation;
+        public List<EnemyNodePose> Nodes=new List<EnemyNodePose>();
 
         public byte[] Serialize()
         {
@@ -47,4 +49,14 @@ namespace Orbit_Us
             }
         }
     }
+    public sealed class EnemyNodePose
+    {
+        public string Path="",Sprite="";
+        public float X,Y,Z,Rotation,ScaleX=1,ScaleY=1,ScaleZ=1,R=1,G=1,B=1,A=1;
+        public bool Active=true,RendererEnabled=true;
+        public int HealthId;
+        public float HP,MaxHP;
+        public List<float> LinePoints=new List<float>();
+    }
+
 }

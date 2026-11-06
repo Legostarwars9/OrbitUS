@@ -50,7 +50,21 @@ namespace Orbit_Us
         public bool HoleScreen, Bars, Compass, Parallax, InGameStuff, SingularityEnabled;
         public float CameraSize=24, CameraMaxZoom=40, LightIntensity=1, DarknessAlpha, FlowX, FlowY, FlowSpeed, StayForce, BackgroundR, BackgroundG, BackgroundB;
         public string TerminalText = "", Song = "", BossName = "";
+        public EndingEffectsState Effects=new EndingEffectsState();
         public List<StoryDialogueState> Dialogues = new List<StoryDialogueState>();
         public List<DataPieceState> Pieces = new List<DataPieceState>();
     }
+    public sealed class DarknessPose
+    {
+        public bool Active;
+        public float X=1,Y=1,Z=1;
+    }
+    public sealed class EndingEffectsState
+    {
+        public int Phase,AmplitudeSteps,FrequencySteps,ParticleCount;
+        public bool Spawning,Exotics,Controls=true,RelativisticCamera=true,CameraAtBlackHole,BlackHoleActive=true;
+        public float BloomIntensity,BloomThreshold,LensDistortion;
+        public List<DarknessPose> Darkness=new List<DarknessPose>();
+    }
+
 }

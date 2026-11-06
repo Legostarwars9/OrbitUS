@@ -6,7 +6,7 @@ namespace Orbit_Us
 {
     public static class ProgressSnapshotCodec
     {
-        private const int Version = 1, HeaderBytes = 20, ChunkBytes = 1080;
+        private const int Version = 2, HeaderBytes = 20, ChunkBytes = 1080;
         public const int MaxSnapshotBytes = 2 * 1024 * 1024;
         private static readonly Encoding Utf8 = new UTF8Encoding(false, true);
         public static List<byte[]> Encode(ProgressState state, int snapshotId)
@@ -81,6 +81,10 @@ namespace Orbit_Us
                 throw new InvalidDataException("Invalid story state.");
             foreach(float v in new[]{s.CameraSize,s.CameraMaxZoom,s.LightIntensity,s.DarknessAlpha,s.FlowX,s.FlowY,s.FlowSpeed,s.StayForce,s.BackgroundR,s.BackgroundG,s.BackgroundB})
                 if(!Finite(v)) throw new InvalidDataException("Invalid story presentation.");
+            var fx=s.Effects;
+            if(fx==null || fx.Phase<0 || fx.Phase>5 || fx.AmplitudeSteps<0 || fx.AmplitudeSteps>1000 || fx.FrequencySteps<0 || fx.FrequencySteps>1000 || fx.ParticleCount<0 || fx.ParticleCount>1000 || fx.Darkness.Count>16 ||
+                !Finite(fx.BloomIntensity) || !Finite(fx.BloomThreshold) || !Finite(fx.LensDistortion))throw new InvalidDataException("Invalid ending effects.");
+            foreach(var d in fx.Darkness)if(!Finite(d.X)||!Finite(d.Y)||!Finite(d.Z))throw new InvalidDataException("Invalid darkness pose.");
             var ids = new HashSet<int>();
             foreach (var p in s.Pieces)
                 if (p.Id <= 0 || !ids.Add(p.Id) || p.PlanetId < 0 || p.Prefab.Length > 256 || !Finite(p.X) || !Finite(p.Y) ||
@@ -96,6 +100,11 @@ namespace Orbit_Us
             foreach(bool v in new[]{s.HoleScreen,s.Bars,s.Compass,s.Parallax,s.InGameStuff,s.SingularityEnabled}) w.Write(v);
             foreach(float v in new[]{s.CameraSize,s.CameraMaxZoom,s.LightIntensity,s.DarknessAlpha,s.FlowX,s.FlowY,s.FlowSpeed,s.StayForce,s.BackgroundR,s.BackgroundG,s.BackgroundB}) w.Write(v);
             String(w,s.TerminalText); String(w,s.Song); String(w,s.BossName);
+            var fx=s.Effects;
+            w.Write(fx.Phase);w.Write(fx.AmplitudeSteps);w.Write(fx.FrequencySteps);w.Write(fx.ParticleCount);
+            foreach(bool v in new[]{fx.Spawning,fx.Exotics,fx.Controls,fx.RelativisticCamera,fx.CameraAtBlackHole,fx.BlackHoleActive})w.Write(v);
+            w.Write(fx.BloomIntensity);w.Write(fx.BloomThreshold);w.Write(fx.LensDistortion);
+            w.Write(fx.Darkness.Count);foreach(var d in fx.Darkness){w.Write(d.Active);w.Write(d.X);w.Write(d.Y);w.Write(d.Z);}
             w.Write(s.Dialogues.Count);
             foreach(var d in s.Dialogues) { w.Write(d.Active); w.Write(d.Writing); String(w,d.Text); String(w,d.LowerText); }
             w.Write(s.Pieces.Count);
@@ -119,6 +128,8 @@ namespace Orbit_Us
                 CameraSize=r.ReadSingle(),CameraMaxZoom=r.ReadSingle(),LightIntensity=r.ReadSingle(),DarknessAlpha=r.ReadSingle(),FlowX=r.ReadSingle(),FlowY=r.ReadSingle(),FlowSpeed=r.ReadSingle(),StayForce=r.ReadSingle(),BackgroundR=r.ReadSingle(),BackgroundG=r.ReadSingle(),BackgroundB=r.ReadSingle(),
                 TerminalText=String(r),Song=String(r),BossName=String(r)
             };
+            s.Effects=new EndingEffectsState {Phase=r.ReadInt32(),AmplitudeSteps=r.ReadInt32(),FrequencySteps=r.ReadInt32(),ParticleCount=r.ReadInt32(),Spawning=r.ReadBoolean(),Exotics=r.ReadBoolean(),Controls=r.ReadBoolean(),RelativisticCamera=r.ReadBoolean(),CameraAtBlackHole=r.ReadBoolean(),BlackHoleActive=r.ReadBoolean(),BloomIntensity=r.ReadSingle(),BloomThreshold=r.ReadSingle(),LensDistortion=r.ReadSingle()};
+            int darkness=Count(r,16);for(int i=0;i<darkness;i++)s.Effects.Darkness.Add(new DarknessPose {Active=r.ReadBoolean(),X=r.ReadSingle(),Y=r.ReadSingle(),Z=r.ReadSingle()});
             int dialogues=Count(r,40);
             for(int i=0;i<dialogues;i++) s.Dialogues.Add(new StoryDialogueState {Active=r.ReadBoolean(),Writing=r.ReadBoolean(),Text=String(r),LowerText=String(r)});
             int pieces=Count(r,10000);
