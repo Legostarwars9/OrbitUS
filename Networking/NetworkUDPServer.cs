@@ -43,6 +43,8 @@ namespace Orbit_Us
             // The codec caps each snapshot at 8 MiB; retain only three IDs.
             var planetSnapshots = new SortedDictionary<int, CachedPlanetSnapshot>();
             var lastPlanetRepair = new Dictionary<IPEndPoint, DateTime>();
+            var progressSnapshots = new SortedDictionary<int, CachedPlanetSnapshot>();
+            var lastProgressRepair = new Dictionary<IPEndPoint, DateTime>();
             Task<UdpReceiveResult> receive = socket.ReceiveAsync();
             Task tick = Task.Delay(1000);
             int rosterRevision = 0;
@@ -62,10 +64,12 @@ namespace Orbit_Us
                             sequences.Remove(endpoint);
                             lastSeen.Remove(endpoint);
                             lastPlanetRepair.Remove(endpoint);
+                            lastProgressRepair.Remove(endpoint);
                             if (endpoint.Equals(hostEndpoint))
                             {
                                 hostEndpoint = null;
                                 planetSnapshots.Clear();
+                                progressSnapshots.Clear();
                             }
                             await Broadcast(socket, clients, PacketSerializer.Serialize(new NetworkPacket
                             {
@@ -145,11 +149,13 @@ namespace Orbit_Us
                         clients.Remove(sender);
                         lastSeen.Remove(sender);
                         lastPlanetRepair.Remove(sender);
+                        lastProgressRepair.Remove(sender);
                         sequences.Remove(sender);
                         if (sender.Equals(hostEndpoint))
                         {
                             hostEndpoint = null;
                             planetSnapshots.Clear();
+                                progressSnapshots.Clear();
                         }
                         lock (lifecycle)
                             if (ReferenceEquals(socket, udpServer)) destinations = new List<IPEndPoint>(clients.Keys).ToArray();
@@ -257,6 +263,67 @@ namespace Orbit_Us
                             byte[] chunk = cached.Chunks[index];
                             if (chunk != null) await socket.SendAsync(chunk, chunk.Length, sender);
                         }
+                        continue;
+                    }
+
+                    if (packet.Type == PacketType.ProgressSnapshot)
+                    {
+                        if (hostEndpoint == null || !hostEndpoint.Equals(sender) ||
+                            !ProgressSnapshotCodec.TryReadChunkHeader(packet.Data, out int snapshotId,
+                                out int chunkIndex, out int chunkCount)) continue;
+                        if (!progressSnapshots.TryGetValue(snapshotId, out CachedPlanetSnapshot cached))
+                        {
+                            if (progressSnapshots.Count >= 3)
+                            {
+                                int oldest = int.MaxValue;
+                                foreach (int id in progressSnapshots.Keys) { oldest = id; break; }
+                                if (snapshotId < oldest) continue;
+                                progressSnapshots.Remove(oldest);
+                            }
+                            cached = new CachedPlanetSnapshot { Chunks = new byte[chunkCount][] };
+                            progressSnapshots.Add(snapshotId, cached);
+                        }
+                        if (cached.Chunks.Length != chunkCount) continue;
+                        cached.Chunks[chunkIndex] = result.Buffer;
+                        await Broadcast(socket, clients, result.Buffer, sender);
+                        continue;
+                    }
+                    if (packet.Type == PacketType.ProgressSnapshotRequest)
+                    {
+                        if (hostEndpoint == null || hostEndpoint.Equals(sender) ||
+                            packet.Data.Length < 8 || packet.Data.Length > 260 || packet.Data.Length % 4 != 0)
+                            continue;
+                        DateTime now = DateTime.UtcNow;
+                        if (lastProgressRepair.TryGetValue(sender, out DateTime previousRepair) &&
+                            (now - previousRepair).TotalSeconds < 0.25) continue;
+                        lastProgressRepair[sender] = now;
+                        int snapshotId = BitConverter.ToInt32(packet.Data, 0);
+                        if (!progressSnapshots.TryGetValue(snapshotId, out CachedPlanetSnapshot cached)) continue;
+                        var sent = new HashSet<int>();
+                        for (int offset = 4; offset < packet.Data.Length; offset += 4)
+                        {
+                            int index = BitConverter.ToInt32(packet.Data, offset);
+                            if (index < 0 || index >= cached.Chunks.Length || !sent.Add(index)) continue;
+                            byte[] chunk = cached.Chunks[index];
+                            if (chunk != null) await socket.SendAsync(chunk, chunk.Length, sender);
+                        }
+                        continue;
+                    }
+
+                    if (packet.Type == PacketType.ProgressAction)
+                    {
+                        if (hostEndpoint == null || hostEndpoint.Equals(sender)) continue;
+                        var action = ProgressAction.Deserialize(packet.Data);
+                        action.PlayerId = clients[sender];
+                        byte[] bytes = PacketSerializer.Serialize(new NetworkPacket { Type = PacketType.ProgressAction, Data = action.Serialize() });
+                        await socket.SendAsync(bytes, bytes.Length, hostEndpoint);
+                        continue;
+                    }
+                    if (packet.Type == PacketType.ProgressActionAck && hostEndpoint != null && hostEndpoint.Equals(sender) && packet.Data.Length == 8)
+                    {
+                        int target = BitConverter.ToInt32(packet.Data, 0);
+                        foreach (var client in clients)
+                            if (client.Value == target) { await socket.SendAsync(result.Buffer, result.Buffer.Length, client.Key); break; }
                         continue;
                     }
 

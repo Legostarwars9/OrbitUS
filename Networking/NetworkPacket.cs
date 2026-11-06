@@ -17,7 +17,11 @@ namespace Orbit_Us
         PlayerRoster,
         ServerStopped,
         PlanetSnapshot,
-        PlanetSnapshotRequest
+        PlanetSnapshotRequest,
+        ProgressSnapshot,
+        ProgressSnapshotRequest,
+        ProgressAction,
+        ProgressActionAck
     }
 
     public class NetworkPacket

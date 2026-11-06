@@ -43,6 +43,10 @@
     </ItemGroup>
     <ItemGroup>
         <Compile Include="OrbitUs.cs" />
+        <Compile Include="ProgressionSyncing\ProgressState.cs" />
+        <Compile Include="ProgressionSyncing\ProgressSnapshotCodec.cs" />
+        <Compile Include="ProgressionSyncing\ProgressReplicator.cs" />
+        <Compile Include="ProgressionSyncing\ProgressSyncPatches.cs" />
 
         <Compile Include="Networking\NetworkConnection.cs" />
         <Compile Include="Networking\NetworkManager.cs" />

@@ -15,6 +15,8 @@ namespace Orbit_Us
         private byte[][] latestSnapshot;
         private readonly PlanetSnapshotCodec.Assembler planetSnapshots = new PlanetSnapshotCodec.Assembler();
         private byte[][] latestPlanetSnapshot;
+        private readonly ProgressSnapshotCodec.Assembler progressSnapshots = new ProgressSnapshotCodec.Assembler();
+        private byte[][] latestProgressSnapshot;
         private const int MaxEvents = 4096;
         private const int MaxPlayers = 256;
 
@@ -47,6 +49,10 @@ namespace Orbit_Us
                     if (planetSnapshots.TryAdd(packet.Data, out _))
                         latestPlanetSnapshot = planetSnapshots.CompletedChunks;
                 }
+                else if (packet.Type == PacketType.ProgressSnapshot)
+                {
+                    if (progressSnapshots.TryAdd(packet.Data, out _)) latestProgressSnapshot = progressSnapshots.CompletedChunks;
+                }
                 else
                 {
                     if (packet.Type == PacketType.PlayerDisconnected && packet.Data.Length == 4)
@@ -76,6 +82,20 @@ namespace Orbit_Us
             }
         }
 
+        public byte[] GetProgressRepairRequest()
+        {
+            lock (gate)
+            {
+                int[] missing = progressSnapshots.GetMissingChunks(64, out int snapshotId);
+                if (missing.Length == 0) return null;
+                byte[] request = new byte[(missing.Length + 1) * 4];
+                Buffer.BlockCopy(BitConverter.GetBytes(snapshotId), 0, request, 0, 4);
+                for (int i = 0; i < missing.Length; i++)
+                    Buffer.BlockCopy(BitConverter.GetBytes(missing[i]), 0, request, (i + 1) * 4, 4);
+                return request;
+            }
+        }
+
         public List<NetworkPacket> Drain()
         {
             lock (gate)
@@ -95,6 +115,12 @@ namespace Orbit_Us
                     foreach (byte[] chunk in latestPlanetSnapshot)
                         result.Add(new NetworkPacket { Type = PacketType.PlanetSnapshot, Data = chunk });
                     latestPlanetSnapshot = null;
+                }
+                if (latestProgressSnapshot != null)
+                {
+                    foreach (byte[] chunk in latestProgressSnapshot)
+                        result.Add(new NetworkPacket { Type = PacketType.ProgressSnapshot, Data = chunk });
+                    latestProgressSnapshot = null;
                 }
                 return result;
             }

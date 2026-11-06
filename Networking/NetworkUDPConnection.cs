@@ -14,6 +14,8 @@ namespace Orbit_Us
         private uint transformSequence;
         private int sendingTransform;
         private int sendingPlanetSnapshot;
+        private int sendingProgressSnapshot, sendingProgressRepair;
+        private DateTime lastProgressRepair;
         private int sendingPlanetRepair;
         private DateTime lastPlanetRepair;
         private PendingPacketBuffer receivedPackets = new PendingPacketBuffer();
@@ -144,6 +146,63 @@ namespace Orbit_Us
                     Console.WriteLine($"UDP planet repair request failed: {ex.Message}");
             }
             finally { Interlocked.Exchange(ref sendingPlanetRepair, 0); }
+        }
+
+        public async Task SendProgressSnapshot(ProgressState state, int snapshotId)
+        {
+            UdpClient socket = udpClient;
+            if (!connected || socket == null || !HostConnection ||
+                Interlocked.CompareExchange(ref sendingProgressSnapshot, 1, 0) != 0) return;
+            try
+            {
+                // The caller captures Unity state into independent DTOs before
+                // this call. Serialization and socket work never use Unity APIs.
+                var chunks = await Task.Run(() => ProgressSnapshotCodec.Encode(state, snapshotId)).ConfigureAwait(false);
+                for (int i = 0; i < chunks.Count; i++)
+                {
+                    if (!connected || !ReferenceEquals(socket, udpClient)) return;
+                    byte[] data = PacketSerializer.Serialize(new NetworkPacket
+                    {
+                        Type = PacketType.ProgressSnapshot, Data = chunks[i]
+                    });
+                    await socket.SendAsync(data, data.Length).ConfigureAwait(false);
+                    // Bound large-world bursts to roughly 200 datagrams/sec.
+                    if ((i + 1) % 16 == 0 && i + 1 < chunks.Count)
+                        await Task.Delay(80).ConfigureAwait(false);
+                }
+            }
+            catch (Exception ex) { Console.WriteLine($"UDP progress snapshot send failed: {ex.Message}"); }
+            finally { Interlocked.Exchange(ref sendingProgressSnapshot, 0); }
+        }
+
+        private async Task RequestProgressRepair(byte[] request)
+        {
+            UdpClient socket = udpClient;
+            if (!connected || socket == null ||
+                Interlocked.CompareExchange(ref sendingProgressRepair, 1, 0) != 0) return;
+            try
+            {
+                byte[] data = PacketSerializer.Serialize(new NetworkPacket
+                {
+                    Type = PacketType.ProgressSnapshotRequest, Data = request
+                });
+                await socket.SendAsync(data, data.Length).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                if (connected && ReferenceEquals(socket, udpClient))
+                    Console.WriteLine($"UDP progress repair request failed: {ex.Message}");
+            }
+            finally { Interlocked.Exchange(ref sendingProgressRepair, 0); }
+        }
+
+        public Task SendProgressAction(ProgressAction action) => SendPacket(new NetworkPacket { Type = PacketType.ProgressAction, Data = action.Serialize() });
+        public Task SendProgressActionAck(int playerId, int requestId)
+        {
+            byte[] bytes = new byte[8];
+            Buffer.BlockCopy(BitConverter.GetBytes(playerId), 0, bytes, 0, 4);
+            Buffer.BlockCopy(BitConverter.GetBytes(requestId), 0, bytes, 4, 4);
+            return SendPacket(new NetworkPacket { Type = PacketType.ProgressActionAck, Data = bytes });
         }
 
         private async Task SendPlayerConnect()
@@ -284,6 +343,13 @@ namespace Orbit_Us
                 lastPlanetRepair = DateTime.UtcNow;
                 byte[] request = receivedPackets.GetPlanetRepairRequest();
                 if (request != null) _ = RequestPlanetRepair(request);
+            }
+
+            if (!HostConnection && LocalPlayerId > 0 && (DateTime.UtcNow - lastProgressRepair).TotalSeconds >= 0.5)
+            {
+                lastProgressRepair = DateTime.UtcNow;
+                byte[] request = receivedPackets.GetProgressRepairRequest();
+                if (request != null) _ = RequestProgressRepair(request);
             }
 
             foreach (NetworkPacket packet in receivedPackets.Drain())

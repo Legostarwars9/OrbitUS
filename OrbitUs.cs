@@ -23,6 +23,7 @@ namespace Orbit_Us
         private PlayerTracker playerTracker;
         private EnemyReplicator enemyReplicator;
         private PlanetReplicator planetReplicator;
+        private ProgressReplicator progressReplicator;
 
         private Sprite playerSprite;
         private Sprite arrowSprite;
@@ -221,6 +222,8 @@ namespace Orbit_Us
                 enemyReplicator.Initialize();
                 planetReplicator = new PlanetReplicator(networkUDPConnection, false);
                 planetReplicator.Initialize();
+                progressReplicator = new ProgressReplicator(networkUDPConnection, IsHost);
+                progressReplicator.Initialize();
 
                 playerReplicator.Initialize();
 
@@ -248,6 +251,8 @@ namespace Orbit_Us
                     $"UDP connection failed: {ex.Message}"
                 );
 
+                progressReplicator?.Destroy();
+                progressReplicator = null;
                 planetReplicator?.Destroy();
                 planetReplicator = null;
                 enemyReplicator?.Destroy();
@@ -291,6 +296,8 @@ namespace Orbit_Us
 
             playerReplicator = null;
             
+            progressReplicator?.Destroy();
+            progressReplicator = null;
             planetReplicator?.Destroy();
             planetReplicator = null;
             enemyReplicator?.Destroy();
@@ -357,6 +364,8 @@ namespace Orbit_Us
                 enemyReplicator.Initialize();
                 planetReplicator = new PlanetReplicator(networkUDPConnection, true);
                 planetReplicator.Initialize();
+                progressReplicator = new ProgressReplicator(networkUDPConnection, IsHost);
+                progressReplicator.Initialize();
                 
                 playerReplicator.Initialize();
 
@@ -384,6 +393,8 @@ namespace Orbit_Us
                     $"Host UDP connection failed: {ex.Message}"
                 );
 
+                progressReplicator?.Destroy();
+                progressReplicator = null;
                 planetReplicator?.Destroy();
                 planetReplicator = null;
                 enemyReplicator?.Destroy();
@@ -444,6 +455,8 @@ namespace Orbit_Us
                 playerReplicator = null;
                 playerTracker?.Destroy();
                 playerTracker = null;
+                progressReplicator?.Destroy();
+                progressReplicator = null;
                 planetReplicator?.Destroy();
                 planetReplicator = null;
                 enemyReplicator?.Destroy();
@@ -465,6 +478,7 @@ namespace Orbit_Us
                 playerTracker.Update();
             }
             planetReplicator?.Update();
+            progressReplicator?.Update();
             if (enemyReplicator != null)
             {
                 enemyReplicator.Update();
@@ -528,6 +542,8 @@ namespace Orbit_Us
 
         private void OnDestroy()
         {
+            progressReplicator?.Destroy();
+            progressReplicator = null;
             planetReplicator?.Destroy();
             planetReplicator = null;
             enemyReplicator?.Destroy();

@@ -445,6 +445,19 @@ namespace Orbit_Us
             remoteEnemies.Remove(enemyId);
         }
 
+        public int GetObjectId(GameObject obj)
+        {
+            if (obj == null) return 0;
+            if (!isHost) return remoteIds.TryGetValue(obj, out int remote) ? remote : 0;
+            var e = obj.GetComponent<enemy>();
+            return e != null && hostEnemies.TryGetValue(e, out int id) ? id : 0;
+        }
+        public GameObject ResolveObject(int id)
+        {
+            if (!isHost) return remoteEnemies.TryGetValue(id, out RemoteEnemy remote) ? remote.GameObject : null;
+            return hostEnemiesById.TryGetValue(id, out enemy e) && e != null ? e.gameObject : null;
+        }
+
         public void Destroy()
         {
             initialized = false;

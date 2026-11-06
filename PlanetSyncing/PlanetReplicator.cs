@@ -702,6 +702,21 @@ namespace Orbit_Us
             replicas.Remove(id);
         }
 
+        public int GetObjectId(GameObject obj)
+        {
+            if (obj == null) return 0;
+            var g = obj.GetComponent<gravity>();
+            if (isHost) return g != null && hostIds.TryGetValue(g, out int id) ? id : 0;
+            foreach (var pair in replicas) if (pair.Value.Object == obj) return pair.Key;
+            return 0;
+        }
+        public GameObject ResolveObject(int id)
+        {
+            if (!isHost) return replicas.TryGetValue(id, out Replica replica) ? replica.Object : null;
+            foreach (var pair in hostIds) if (pair.Value == id && pair.Key != null) return pair.Key.gameObject;
+            return null;
+        }
+
         public void Destroy()
         {
             connection.OnPacketReceived -= HandlePacket;
