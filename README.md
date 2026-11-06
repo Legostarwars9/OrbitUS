@@ -25,15 +25,3 @@ Currently, only the players are synced, so all game progress is client-sided and
 <b>Planned Features:<b> https://trello.com/b/NTNavEf7/orbitus-planned-features
 
 <br><h2><b> AI DISCLAIMER: MOST IF NOT ALL CODE IN THIS MOD IS AI-GENERATED </b></h3>
-
-
-## Project structure
-
-- `OrbitUs.cs`: plugin startup, configuration, and replication lifecycle.
-- `Networking/`: TCP/UDP connections, servers, packets, serialization, and receive buffering.
-- `EnemySyncing/`: enemy replication, damage handling, snapshots, and Harmony patches.
-- `PlanetSyncing/`: celestial replication, snapshots, and Harmony patches.
-- `PlayerSyncing/`: player replication, transform data, and tracking indicators.
-- `Diagnostics/`: prefab inspection and diagnostic helpers.
-- `Properties/`: assembly metadata.
-- `Tests/`: standalone regression suites and test instructions.
