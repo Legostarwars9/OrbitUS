@@ -5,6 +5,7 @@ namespace Orbit_Us
     public class PlayerTransformData
     {
         public int PlayerId;
+        public uint Sequence;
         public float X;
         public float Y;
         public float Rotation;
@@ -18,6 +19,7 @@ namespace Orbit_Us
                 writer.Write(X);
                 writer.Write(Y);
                 writer.Write(Rotation);
+                writer.Write(Sequence);
 
                 return stream.ToArray();
             }
@@ -33,7 +35,8 @@ namespace Orbit_Us
                     PlayerId = reader.ReadInt32(),
                     X = reader.ReadSingle(),
                     Y = reader.ReadSingle(),
-                    Rotation = reader.ReadSingle()
+                    Rotation = reader.ReadSingle(),
+                    Sequence = reader.ReadUInt32()
                 };
             }
         }

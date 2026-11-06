@@ -13,7 +13,11 @@ namespace Orbit_Us
         KeepAliveResponse,
         PlayerConnected,
         EnemyDamageAck,
-        PlayerAssigned
+        PlayerAssigned,
+        PlayerRoster,
+        ServerStopped,
+        PlanetSnapshot,
+        PlanetSnapshotRequest
     }
 
     public class NetworkPacket

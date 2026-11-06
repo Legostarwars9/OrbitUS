@@ -46,10 +46,12 @@ namespace Orbit_Us
             {
                 public EnemyTransformData[][] Chunks;
                 public int Received;
+                public byte[][] Data;
             }
 
             private readonly Dictionary<int, Pending> pending = new Dictionary<int, Pending>();
             public int LastSnapshotId { get; private set; }
+            public byte[][] CompletedChunks { get; private set; }
 
             public bool TryAdd(byte[] data, out List<EnemyTransformData> enemies)
             {
@@ -95,13 +97,14 @@ namespace Orbit_Us
                                 return false;
                             pending.Remove(oldest);
                         }
-                        snapshot = new Pending { Chunks = new EnemyTransformData[total][] };
+                        snapshot = new Pending { Chunks = new EnemyTransformData[total][], Data = new byte[total][] };
                         pending.Add(id, snapshot);
                     }
                     if (snapshot.Chunks.Length != total || snapshot.Chunks[index] != null)
                         return false;
 
                     snapshot.Chunks[index] = chunk;
+                    snapshot.Data[index] = data;
                     if (++snapshot.Received != total)
                         return false;
 
@@ -120,6 +123,7 @@ namespace Orbit_Us
                         }
                     }
                     LastSnapshotId = id;
+                    CompletedChunks = snapshot.Data;
                     foreach (int key in new List<int>(pending.Keys))
                         if (key <= id) pending.Remove(key);
                     enemies = complete;

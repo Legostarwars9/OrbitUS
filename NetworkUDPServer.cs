@@ -3,25 +3,25 @@ using System.Collections.Generic;
 using System.Net;
 using System.Net.Sockets;
 using System.Threading.Tasks;
+using System.Threading;
 
 namespace Orbit_Us
 {
     public class NetworkUDPServer
     {
+        private sealed class CachedPlanetSnapshot
+        {
+            public byte[][] Chunks;
+        }
+
         private UdpClient udpServer;
-        private bool running;
-        private IPEndPoint hostEndpoint;
-
-        private int nextPlayerId = 1;
-
-        private readonly Dictionary<IPEndPoint, int> clients =
-            new Dictionary<IPEndPoint, int>();
-
+        private volatile bool running;
+        private int nextPlayerId;
+        private readonly object lifecycle = new object();
+        private IPEndPoint[] destinations = new IPEndPoint[0];
         public void Start(int port)
         {
             Stop();
-
-            nextPlayerId = 1;
 
             udpServer = new UdpClient(port);
             running = true;
@@ -30,18 +30,70 @@ namespace Orbit_Us
                 $"UDP Server Started on port {port}"
             );
 
-            _ = Listen();
+            UdpClient socket = udpServer;
+            _ = Task.Run(() => Listen(socket));
         }
 
-        private async Task Listen()
+        private async Task Listen(UdpClient socket)
         {
-            UdpClient socket = udpServer;
+            var clients = new Dictionary<IPEndPoint, int>();
+            var sequences = new Dictionary<IPEndPoint, uint>();
+            IPEndPoint hostEndpoint = null;
+            var lastSeen = new Dictionary<IPEndPoint, DateTime>();
+            // The codec caps each snapshot at 8 MiB; retain only three IDs.
+            var planetSnapshots = new SortedDictionary<int, CachedPlanetSnapshot>();
+            var lastPlanetRepair = new Dictionary<IPEndPoint, DateTime>();
+            Task<UdpReceiveResult> receive = socket.ReceiveAsync();
+            Task tick = Task.Delay(1000);
+            int rosterRevision = 0;
             while (running && ReferenceEquals(socket, udpServer))
             {
                 try
                 {
-                    UdpReceiveResult result =
-                        await socket.ReceiveAsync();
+                    await Task.WhenAny(receive, tick).ConfigureAwait(false);
+                    if (tick.IsCompleted)
+                    {
+                        tick = Task.Delay(1000);
+                        foreach (var endpoint in new List<IPEndPoint>(clients.Keys))
+                        {
+                            if ((DateTime.UtcNow - lastSeen[endpoint]).TotalSeconds < 10) continue;
+                            int departed = clients[endpoint];
+                            clients.Remove(endpoint);
+                            sequences.Remove(endpoint);
+                            lastSeen.Remove(endpoint);
+                            lastPlanetRepair.Remove(endpoint);
+                            if (endpoint.Equals(hostEndpoint))
+                            {
+                                hostEndpoint = null;
+                                planetSnapshots.Clear();
+                            }
+                            await Broadcast(socket, clients, PacketSerializer.Serialize(new NetworkPacket
+                            {
+                                Type = PacketType.PlayerDisconnected, Data = BitConverter.GetBytes(departed)
+                            }), null);
+                        }
+                        lock (lifecycle)
+                            if (ReferenceEquals(socket, udpServer)) destinations = new List<IPEndPoint>(clients.Keys).ToArray();
+                        byte[] roster = new byte[(clients.Count + 1) * 4];
+                        Buffer.BlockCopy(BitConverter.GetBytes(++rosterRevision), 0, roster, 0, 4);
+                        int offset = 4;
+                        foreach (int id in clients.Values)
+                        {
+                            Buffer.BlockCopy(BitConverter.GetBytes(id), 0, roster, offset, 4);
+                            offset += 4;
+                        }
+                        await Broadcast(socket, clients, PacketSerializer.Serialize(new NetworkPacket
+                        {
+                            Type = PacketType.PlayerRoster, Data = roster
+                        }), null);
+                    }
+                    if (!receive.IsCompleted) continue;
+                    UdpReceiveResult result;
+                    try { result = await receive.ConfigureAwait(false); }
+                    finally
+                    {
+                        if (running && ReferenceEquals(socket, udpServer)) receive = socket.ReceiveAsync();
+                    }
 
                     if (!running || !ReferenceEquals(socket, udpServer))
                         break;
@@ -76,29 +128,51 @@ namespace Orbit_Us
                                 continue;
                             hostEndpoint = sender;
                         }
-                        await HandlePlayerConnect(sender);
+                        if (!clients.ContainsKey(sender) && clients.Count >= 256) continue;
+                        lastSeen[sender] = DateTime.UtcNow;
+                        await HandlePlayerConnect(socket, clients, sender);
+                        lock (lifecycle)
+                            if (ReferenceEquals(socket, udpServer)) destinations = new List<IPEndPoint>(clients.Keys).ToArray();
                         continue;
                     }
 
-                    if (!clients.ContainsKey(sender))
+                    // Late datagrams after disconnect/restart are expected.
+                    if (!clients.ContainsKey(sender)) continue;
+                    lastSeen[sender] = DateTime.UtcNow;
+                    if (packet.Type == PacketType.PlayerDisconnected && packet.Data.Length == 0)
                     {
-                        Console.WriteLine(
-                            $"UDP packet from unknown client: {sender.Address}:{sender.Port}"
-                        );
-
+                        int departed = clients[sender];
+                        clients.Remove(sender);
+                        lastSeen.Remove(sender);
+                        lastPlanetRepair.Remove(sender);
+                        sequences.Remove(sender);
+                        if (sender.Equals(hostEndpoint))
+                        {
+                            hostEndpoint = null;
+                            planetSnapshots.Clear();
+                        }
+                        lock (lifecycle)
+                            if (ReferenceEquals(socket, udpServer)) destinations = new List<IPEndPoint>(clients.Keys).ToArray();
+                        await Broadcast(socket, clients, PacketSerializer.Serialize(new NetworkPacket
+                        {
+                            Type = PacketType.PlayerDisconnected, Data = BitConverter.GetBytes(departed)
+                        }), null);
                         continue;
                     }
 
                     if (packet.Type ==
                         PacketType.PlayerTransform)
                     {
+                        if (packet.Data.Length != 20) continue;
                         PlayerTransformData transform =
                             PlayerTransformData.Deserialize(
                                 packet.Data
                             );
 
-                        int playerId =
-                            clients[sender];
+                        if (sequences.TryGetValue(sender, out uint previous) &&
+                            unchecked((int)(transform.Sequence - previous)) <= 0) continue;
+                        sequences[sender] = transform.Sequence;
+                        int playerId = clients[sender];
 
                         transform.PlayerId =
                             playerId;
@@ -123,6 +197,7 @@ namespace Orbit_Us
                         //);
 
                         await Broadcast(
+                            socket, clients,
                             data,
                             sender
                         );
@@ -133,10 +208,55 @@ namespace Orbit_Us
                         if (hostEndpoint == null || !hostEndpoint.Equals(sender))
                             continue;
                         await Broadcast(
+                            socket, clients,
                             result.Buffer,
                             sender
                         );
 
+                        continue;
+                    }
+
+                    if (packet.Type == PacketType.PlanetSnapshot)
+                    {
+                        if (hostEndpoint == null || !hostEndpoint.Equals(sender) ||
+                            !PlanetSnapshotCodec.TryReadChunkHeader(packet.Data, out int snapshotId,
+                                out int chunkIndex, out int chunkCount)) continue;
+                        if (!planetSnapshots.TryGetValue(snapshotId, out CachedPlanetSnapshot cached))
+                        {
+                            if (planetSnapshots.Count >= 3)
+                            {
+                                int oldest = int.MaxValue;
+                                foreach (int id in planetSnapshots.Keys) { oldest = id; break; }
+                                if (snapshotId < oldest) continue;
+                                planetSnapshots.Remove(oldest);
+                            }
+                            cached = new CachedPlanetSnapshot { Chunks = new byte[chunkCount][] };
+                            planetSnapshots.Add(snapshotId, cached);
+                        }
+                        if (cached.Chunks.Length != chunkCount) continue;
+                        cached.Chunks[chunkIndex] = result.Buffer;
+                        await Broadcast(socket, clients, result.Buffer, sender);
+                        continue;
+                    }
+                    if (packet.Type == PacketType.PlanetSnapshotRequest)
+                    {
+                        if (hostEndpoint == null || hostEndpoint.Equals(sender) ||
+                            packet.Data.Length < 8 || packet.Data.Length > 260 || packet.Data.Length % 4 != 0)
+                            continue;
+                        DateTime now = DateTime.UtcNow;
+                        if (lastPlanetRepair.TryGetValue(sender, out DateTime previousRepair) &&
+                            (now - previousRepair).TotalSeconds < 0.25) continue;
+                        lastPlanetRepair[sender] = now;
+                        int snapshotId = BitConverter.ToInt32(packet.Data, 0);
+                        if (!planetSnapshots.TryGetValue(snapshotId, out CachedPlanetSnapshot cached)) continue;
+                        var sent = new HashSet<int>();
+                        for (int offset = 4; offset < packet.Data.Length; offset += 4)
+                        {
+                            int index = BitConverter.ToInt32(packet.Data, offset);
+                            if (index < 0 || index >= cached.Chunks.Length || !sent.Add(index)) continue;
+                            byte[] chunk = cached.Chunks[index];
+                            if (chunk != null) await socket.SendAsync(chunk, chunk.Length, sender);
+                        }
                         continue;
                     }
 
@@ -170,6 +290,7 @@ namespace Orbit_Us
                 }
                 catch (Exception ex)
                 {
+                    if (!running || !ReferenceEquals(socket, udpServer)) break;
                     if (running)
                     {
                         Console.WriteLine(
@@ -181,7 +302,7 @@ namespace Orbit_Us
         }
 
         private async Task HandlePlayerConnect(
-            IPEndPoint sender)
+            UdpClient socket, Dictionary<IPEndPoint, int> clients, IPEndPoint sender)
         {
             if (clients.TryGetValue(
                     sender,
@@ -195,8 +316,9 @@ namespace Orbit_Us
                 {
                     Type = PacketType.PlayerAssigned, Data = BitConverter.GetBytes(existingId)
                 });
-                await udpServer.SendAsync(existingAssignment, existingAssignment.Length, sender);
+                await socket.SendAsync(existingAssignment, existingAssignment.Length, sender);
                 await SendPlayerConnected(
+                    socket,
                     existingId,
                     sender
                 );
@@ -205,7 +327,7 @@ namespace Orbit_Us
             }
 
             int playerId =
-                nextPlayerId++;
+                Interlocked.Increment(ref nextPlayerId);
 
             clients.Add(
                 sender,
@@ -225,8 +347,9 @@ namespace Orbit_Us
             {
                 Type = PacketType.PlayerAssigned, Data = BitConverter.GetBytes(playerId)
             });
-            await udpServer.SendAsync(assignment, assignment.Length, sender);
+            await socket.SendAsync(assignment, assignment.Length, sender);
             await SendPlayerConnected(
+                    socket,
                 playerId,
                 sender
             );
@@ -245,6 +368,7 @@ namespace Orbit_Us
                 );
 
                 await SendPlayerConnected(
+                    socket,
                     client.Value,
                     sender
                 );
@@ -263,6 +387,7 @@ namespace Orbit_Us
                 );
 
                 await SendPlayerConnected(
+                    socket,
                     playerId,
                     client
                 );
@@ -270,7 +395,7 @@ namespace Orbit_Us
         }
 
         private async Task SendPlayerConnected(
-            int playerId,
+            UdpClient socket, int playerId,
             IPEndPoint destination)
         {
             NetworkPacket packet =
@@ -292,7 +417,7 @@ namespace Orbit_Us
 
             try
             {
-                await udpServer.SendAsync(
+                await socket.SendAsync(
                     data,
                     data.Length,
                     destination
@@ -311,7 +436,7 @@ namespace Orbit_Us
         }
 
         private async Task Broadcast(
-            byte[] data,
+            UdpClient socket, Dictionary<IPEndPoint, int> clients, byte[] data,
             IPEndPoint sender)
         {
             foreach (
@@ -326,7 +451,7 @@ namespace Orbit_Us
 
                 try
                 {
-                    await udpServer.SendAsync(
+                    await socket.SendAsync(
                         data,
                         data.Length,
                         client
@@ -343,20 +468,22 @@ namespace Orbit_Us
 
         public void Stop()
         {
-            running = false;
-            hostEndpoint = null;
-
-            clients.Clear();
-
-            try
+            lock (lifecycle)
             {
-                udpServer?.Close();
+                running = false;
+                if (udpServer != null)
+                {
+                    byte[] stopped = PacketSerializer.Serialize(new NetworkPacket
+                    {
+                        Type = PacketType.ServerStopped, Data = new byte[0]
+                    });
+                    foreach (var endpoint in destinations)
+                        try { udpServer.Send(stopped, stopped.Length, endpoint); } catch { }
+                    udpServer.Close();
+                }
+                destinations = new IPEndPoint[0];
+                udpServer = null;
             }
-            catch
-            {
-            }
-
-            udpServer = null;
         }
     }
 }

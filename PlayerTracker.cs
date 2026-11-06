@@ -404,6 +404,7 @@ namespace Orbit_Us
             {
                 if (arrow != null)
                 {
+                    arrow.SetActive(false);
                     UnityEngine.Object.Destroy(
                         arrow
                     );
@@ -418,6 +419,7 @@ namespace Orbit_Us
             {
                 if (player != null)
                 {
+                    player.SetActive(false);
                     UnityEngine.Object.Destroy(
                         player
                     );
@@ -432,6 +434,7 @@ namespace Orbit_Us
             {
                 if (label != null)
                 {
+                    label.gameObject.SetActive(false);
                     UnityEngine.Object.Destroy(
                         label.gameObject
                     );
@@ -458,6 +461,7 @@ namespace Orbit_Us
             {
                 if (label != null)
                 {
+                    label.gameObject.SetActive(false);
                     UnityEngine.Object.Destroy(
                         label.gameObject
                     );
@@ -657,6 +661,7 @@ namespace Orbit_Us
             {
                 if (arrow != null)
                 {
+                    arrow.SetActive(false);
                     UnityEngine.Object.Destroy(
                         arrow
                     );
@@ -669,6 +674,7 @@ namespace Orbit_Us
             {
                 if (player != null)
                 {
+                    player.SetActive(false);
                     UnityEngine.Object.Destroy(
                         player
                     );
@@ -681,6 +687,7 @@ namespace Orbit_Us
             {
                 if (label != null)
                 {
+                    label.gameObject.SetActive(false);
                     UnityEngine.Object.Destroy(
                         label.gameObject
                     );

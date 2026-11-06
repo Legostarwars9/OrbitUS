@@ -42,6 +42,9 @@
         <Reference Include="System.Xml"/>
     </ItemGroup>
     <ItemGroup>
+        <Compile Include="PlanetSnapshotCodec.cs" />
+        <Compile Include="PlanetReplicator.cs" />
+        <Compile Include="PlanetSyncPatches.cs" />
         <Compile Include="EnemyPrefabDump.cs" />
         <Compile Include="EnemyReplicator.cs" />
         <Compile Include="EnemySpawnPatch.cs" />
@@ -56,6 +59,7 @@
         <Compile Include="NetworkUDPServer.cs" />
         <Compile Include="OrbitUs.cs" />
         <Compile Include="PacketSerializer.cs" />
+        <Compile Include="PendingPacketBuffer.cs" />
         <Compile Include="PlayerReplicator.cs" />
         <Compile Include="PlayerTracker.cs" />
         <Compile Include="PlayerTransformData.cs" />
@@ -128,6 +132,14 @@
         </Reference>
         <Reference Include="UnityEngine.Physics2DModule">
             <HintPath>$(OrbitUsGameDir)/OrbitousLinux_Data/Managed/UnityEngine.Physics2DModule.dll</HintPath>
+        </Reference>
+        <Reference Include="Unity.RenderPipelines.Universal.Runtime">
+            <HintPath>$(OrbitUsGameDir)/OrbitousLinux_Data/Managed/Unity.RenderPipelines.Universal.Runtime.dll</HintPath>
+            <Private>False</Private>
+        </Reference>
+        <Reference Include="UnityEngine.ParticleSystemModule">
+            <HintPath>$(OrbitUsGameDir)/OrbitousLinux_Data/Managed/UnityEngine.ParticleSystemModule.dll</HintPath>
+            <Private>False</Private>
         </Reference>
         <Reference Include="UnityEngine.IMGUIModule">
             <HintPath>$(OrbitUsGameDir)/OrbitousLinux_Data/Managed/UnityEngine.IMGUIModule.dll</HintPath>

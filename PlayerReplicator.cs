@@ -241,6 +241,7 @@ namespace Orbit_Us
             {
                 if (remotePlayer != null)
                 {
+                    remotePlayer.SetActive(false);
                     UnityEngine.Object.Destroy(
                         remotePlayer
                     );

@@ -34,12 +34,13 @@ namespace Orbit_Us
         private int nextDamageId = 1;
         private float sendTimer;
         private float retryTimer;
+        private float snapshotInterval = SendRate;
         private float catalogTimer;
         private bool initialized;
         private bool sendingSnapshot;
         private GameObject stagingRoot;
         private waveManager waveManager;
-        private const float SendRate = 0.05f;
+        private const float SendRate = 0.1f;
         private const int MissingSnapshotsBeforeRemoval = 3;
         public static EnemyReplicator Instance { get; private set; }
 
@@ -72,7 +73,7 @@ namespace Orbit_Us
             if (isHost)
             {
                 sendTimer += Time.deltaTime;
-                if (sendTimer >= SendRate && !sendingSnapshot)
+                if (sendTimer >= snapshotInterval && !sendingSnapshot)
                 {
                     sendTimer = 0f;
                     SendEnemySnapshot();
@@ -218,6 +219,9 @@ namespace Orbit_Us
                     hostEnemies.Remove(pair.Key);
                     hostEnemiesById.Remove(pair.Value);
                 }
+                // Target at most 200 snapshot datagrams/sec before relay fan-out.
+                // Large waves trade update frequency for bounded traffic.
+                snapshotInterval = Mathf.Max(SendRate, Mathf.Ceil(snapshot.Count / 40f) / 200f);
                 await connection.SendEnemySnapshot(snapshot, nextSnapshotId++);
             }
             catch (Exception ex) { Debug.LogError($"[Orbit-Us] Enemy snapshot send failed: {ex}"); }
