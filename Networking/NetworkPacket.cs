@@ -29,7 +29,13 @@ namespace Orbit_Us
         TaskTeleport,
         TaskTeleportAck,
         TeamWipe,
-        TeamWipeAck
+        TeamWipeAck,
+        LatencyProbe,
+        LatencyReply,
+        PlayerLatency,
+        HostKick,
+        PlayerKicked,
+        LobbyState
     }
 
     public class NetworkPacket

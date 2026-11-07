@@ -12,9 +12,6 @@ namespace Orbit_Us
         private NetworkStream stream;
 
         private bool connected;
-        private Task receiveTask;
-
-        private DateTime lastKeepAlive;
 
         public bool IsConnected
         {
@@ -59,9 +56,8 @@ namespace Orbit_Us
             );
 
             connected = true;
-            lastKeepAlive = DateTime.Now;
 
-            receiveTask = ReceiveLoop();
+            _ = ReceiveLoop();
 
             return packet;
         }
@@ -82,9 +78,6 @@ namespace Orbit_Us
                     if (packet.Type ==
                         PacketType.KeepAlive)
                     {
-                        lastKeepAlive =
-                            DateTime.Now;
-
                         Console.WriteLine(
                             "Received KeepAlive from server."
                         );
@@ -191,7 +184,6 @@ namespace Orbit_Us
 
             stream = null;
             tcpClient = null;
-            receiveTask = null;
 
             if (wasConnected)
             {

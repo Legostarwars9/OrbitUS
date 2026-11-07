@@ -29,11 +29,23 @@ namespace Orbit_Us
         private HashSet<int> activeRoster;
         private readonly HashSet<int> remotePlayers = new HashSet<int>();
         private readonly HashSet<int> departedPlayers = new HashSet<int>();
+        private readonly Dictionary<int,PlayerTransformData> playerStates=new Dictionary<int,PlayerTransformData>();
+        private readonly Dictionary<int,DateTime> stateTimes=new Dictionary<int,DateTime>();
+        private readonly Dictionary<int,int> playerPings=new Dictionary<int,int>();
+        private readonly Dictionary<int,DateTime> pingTimes=new Dictionary<int,DateTime>();
+        public int HostPlayerId {get;private set;}=-1;
+        public bool LobbyStarted {get;private set;}
+        public string DisconnectReason {get;private set;}="";
+        public PlayerTransformData GetPlayerState(int id)=>stateTimes.TryGetValue(id,out DateTime at) &&
+            (DateTime.UtcNow-at).TotalSeconds<3 && playerStates.TryGetValue(id,out PlayerTransformData state)?state:null;
+        public int? GetPlayerPing(int id)=>pingTimes.TryGetValue(id,out DateTime at) &&
+            (DateTime.UtcNow-at).TotalSeconds<5 && playerPings.TryGetValue(id,out int ping)?(int?)ping:null;
+        public Task KickPlayer(int id)=>HostConnection && id>0 && id!=LocalPlayerId?
+            SendPacket(new NetworkPacket {Type=PacketType.HostKick,Data=BitConverter.GetBytes(id)}):Task.CompletedTask;
+        public Task SetLobbyStarted()=>HostConnection?
+            SendPacket(new NetworkPacket {Type=PacketType.LobbyState,Data=new byte[]{1}}):Task.CompletedTask;
         public bool IsConnected => connected;
         public bool HostConnection { get; set; }
-
-        private string serverAddress;
-        private int serverPort;
 
         public int LocalPlayerId { get; private set; } = -1;
 
@@ -52,9 +64,7 @@ namespace Orbit_Us
             int port)
         {
             Disconnect();
-
-            serverAddress = address;
-            serverPort = port;
+            DisconnectReason="";
 
             udpClient =
                 new UdpClient(0);
@@ -336,6 +346,9 @@ namespace Orbit_Us
             =>SendMovement(new PlayerTransformData {X=x,Y=y,Rotation=rotation,VX=vx,VY=vy,HasVelocity=true});
         public Task SendPlayerState(float x,float y,float rotation,float vx,float vy,bool alive)
             =>SendMovement(new PlayerTransformData {X=x,Y=y,Rotation=rotation,VX=vx,VY=vy,HasVelocity=true,HasLifeState=true,Alive=alive});
+        public Task SendPlayerVitals(float x,float y,float rotation,float vx,float vy,bool alive,float health,float maxHealth,float fuel,float maxFuel)
+            =>SendMovement(new PlayerTransformData {X=x,Y=y,Rotation=rotation,VX=vx,VY=vy,HasVelocity=true,HasLifeState=true,Alive=alive,
+                HasVitals=true,Health=health,MaxHealth=maxHealth,Fuel=fuel,MaxFuel=maxFuel});
 
         private async Task SendMovement(PlayerTransformData transform)
         {
@@ -346,6 +359,7 @@ namespace Orbit_Us
             {
                 transform.PlayerId=LocalPlayerId;transform.Sequence=++transformSequence;
                 transform.IsHost=HostConnection;
+                playerStates[LocalPlayerId]=transform;stateTimes[LocalPlayerId]=DateTime.UtcNow;
                 byte[] data = PacketSerializer.Serialize(new NetworkPacket
                 {
                     Type = PacketType.PlayerTransform, Data = transform.Serialize()
@@ -386,6 +400,7 @@ namespace Orbit_Us
             if (!connected) return;
             if (DateTime.UtcNow.Ticks - Interlocked.Read(ref lastServerPacketTicks) > TimeSpan.FromSeconds(10).Ticks)
             {
+                DisconnectReason="Connection timed out.";
                 Disconnect();
                 return;
             }
@@ -422,12 +437,38 @@ namespace Orbit_Us
             {
                 if (packet.Type == PacketType.ServerStopped)
                 {
+                    DisconnectReason="The host closed the session.";
                     Disconnect();
                     return;
+                }
+                if(packet.Type==PacketType.PlayerKicked)
+                {
+                    DisconnectReason="You were kicked by the host.";Disconnect();return;
+                }
+                if(packet.Type==PacketType.LatencyProbe && packet.Data.Length==8)
+                {
+                    _=SendPacket(new NetworkPacket {Type=PacketType.LatencyReply,Data=packet.Data});continue;
                 }
                 if (packet.Type == PacketType.PlayerAssigned && packet.Data.Length == 4 && LocalPlayerId == -1)
                     LocalPlayerId = BitConverter.ToInt32(packet.Data, 0);
                 if (LocalPlayerId == -1) continue;
+                if(packet.Type==PacketType.PlayerLatency)
+                {
+                    if(packet.Data.Length%8!=0 || packet.Data.Length>512)continue;
+                    for(int i=0;i<packet.Data.Length;i+=8)
+                    {
+                        int id=BitConverter.ToInt32(packet.Data,i),ms=BitConverter.ToInt32(packet.Data,i+4);
+                        if(id<=0 || ms<0 || ms>10000 || (id!=LocalPlayerId && !remotePlayers.Contains(id)))continue;
+                        playerPings[id]=ms;pingTimes[id]=DateTime.UtcNow;
+                    }
+                    continue;
+                }
+                if(packet.Type==PacketType.LobbyState && packet.Data.Length==5)
+                {
+                    int id=BitConverter.ToInt32(packet.Data,0);
+                    if(id>0 && packet.Data[4]<=1){HostPlayerId=id;LobbyStarted=packet.Data[4]==1;}
+                    continue;
+                }
                 if (packet.Type == PacketType.PlayerRoster)
                 {
                     if (packet.Data.Length < 4 || packet.Data.Length % 4 != 0) continue;
@@ -442,7 +483,7 @@ namespace Orbit_Us
                     {
                         if (active.Contains(id)) continue;
                         remotePlayers.Remove(id);
-                        DeliverPacket(new NetworkPacket { Type = PacketType.PlayerDisconnected, Data = BitConverter.GetBytes(id) });
+                        NotifyPlayerLeft(id);
                     }
                     foreach (int id in active)
                     {
@@ -463,6 +504,8 @@ namespace Orbit_Us
                     if (departedPlayers.Contains(id) || (activeRoster != null && !activeRoster.Contains(id))) continue;
                     if (id != LocalPlayerId) remotePlayers.Add(id);
                 }
+                if(packet.Type==PacketType.PlayerTransform && PlayerTransformData.TryDeserialize(packet.Data,out PlayerTransformData state))
+                {playerStates[state.PlayerId]=state;stateTimes[state.PlayerId]=DateTime.UtcNow;}
                 DeliverPacket(packet);
             }
         }
@@ -477,6 +520,7 @@ namespace Orbit_Us
         {
             if (id == LocalPlayerId || !departedPlayers.Add(id)) return;
             remotePlayers.Remove(id);
+            playerStates.Remove(id);stateTimes.Remove(id);playerPings.Remove(id);pingTimes.Remove(id);
             DeliverPacket(new NetworkPacket { Type = PacketType.PlayerDisconnected, Data = BitConverter.GetBytes(id) });
         }
 
@@ -496,6 +540,8 @@ namespace Orbit_Us
             departedPlayers.Clear();
             rosterRevision = 0;
             activeRoster = null;
+            playerStates.Clear();stateTimes.Clear();playerPings.Clear();pingTimes.Clear();
+            HostPlayerId=-1;LobbyStarted=false;
             lastHeartbeat = default(DateTime);
             lastPlanetRepair = default(DateTime);
 

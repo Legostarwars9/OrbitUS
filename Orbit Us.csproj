@@ -40,9 +40,11 @@
         <Reference Include="System.Core"/>
         <Reference Include="System.Data"/>
         <Reference Include="System.Xml"/>
+        <Reference Include="System.Runtime.Serialization"/>
     </ItemGroup>
     <ItemGroup>
         <Compile Include="OrbitUs.cs" />
+        <Compile Include="UI\MultiplayerMenu.cs" />
         <Compile Include="Audio\TeleportSound.cs" />
         <Compile Include="CombatSyncing\CombatState.cs" />
         <Compile Include="CombatSyncing\CombatSnapshotCodec.cs" />
@@ -57,6 +59,8 @@
         <Compile Include="ProgressionSyncing\ProgressSyncPatches.cs" />
 
         <Compile Include="Networking\NetworkConnection.cs" />
+        <Compile Include="Networking\RoomProtocol.cs" />
+        <Compile Include="Networking\RoomTransport.cs" />
         <Compile Include="Networking\NetworkManager.cs" />
         <Compile Include="Networking\NetworkPacket.cs" />
         <Compile Include="Networking\NetworkServer.cs" />

@@ -31,6 +31,21 @@ namespace Orbit_Us
         private TeleportSound teleportSound;
 
         private bool udpConnected;
+        private bool menuLobby,replicationInitialized;
+        private MultiplayerMenu multiplayerMenu;
+        private float lobbyStartRetry;
+        private RoomTransport room;
+        private Task<RoomTransport> roomTask;
+        private ConfigEntry<string> matchmakingAddress,matchmakingAccess;
+        private ConfigEntry<int> matchmakingPort;
+        public RoomTransport Room=>room;
+        public bool RoomRequested=>room!=null || roomTask!=null;
+        public string MatchmakingEndpoint=>matchmakingAddress.Value+(matchmakingPort.Value==3478?"":":"+matchmakingPort.Value);
+        public NetworkUDPConnection Connection=>networkUDPConnection;
+        public bool SessionActive=>udpConnected;
+        public bool GameplayConnected=>udpConnected && replicationInitialized && !teamGameOverApplied;
+        public bool SessionHost=>IsHost;
+        public string NetworkStatus {get;private set;}="";
         private bool teamGameOverApplied;
         private bool freshReplayRequired,reloadingAfterWipe;
         public static OrbitUs Instance {get;private set;}
@@ -82,16 +97,21 @@ namespace Orbit_Us
 
             networkServer.OnClientConnected +=
                 ClientConnected;
+            multiplayerMenu=new MultiplayerMenu(this,serverAddress.Value,udpPort.Value);
         }
 
         private void LoadConfig()
         {
+            matchmakingAddress=Config.Bind("Matchmaking","ServerAddress","","IP address or DNS name of your running OrbitUS-P2P-Server, without a URL scheme or port. All players use the same server.");
+            matchmakingPort=Config.Bind("Matchmaking","Port",3478,
+                new ConfigDescription("UDP port of OrbitUS-P2P-Server. This is separate from the game's direct-connection ports.",new AcceptableValueRange<int>(1,65535)));
+            matchmakingAccess=Config.Bind("Matchmaking","AccessKey","","Optional ORBITUS_ACCESS_KEY configured by the server operator.");
             serverAddress =
                 Config.Bind(
                     "Network",
                     "ServerAddress",
                     "[Put IP address Here]",
-                    "Tailscale DNS name or IP address of the server."
+                    "Host IP address or DNS name for Direct IP / VPN and F7 joining. Room codes use Matchmaking.ServerAddress instead."
                 );
 
             tcpPort =
@@ -99,7 +119,7 @@ namespace Orbit_Us
                     "Network",
                     "TCPPort",
                     7777,
-                    "TCP server port."
+                    new ConfigDescription("TCP port for the legacy F6/F7 connection.",new AcceptableValueRange<int>(1,65535))
                 );
 
             udpPort =
@@ -107,9 +127,11 @@ namespace Orbit_Us
                     "Network",
                     "UDPPort",
                     7778,
-                    "UDP server port."
+                    new ConfigDescription("UDP game port used by the host and Direct IP / VPN connections.",new AcceptableValueRange<int>(1,65535))
                 );
 
+            Config.Save();
+            Logger.LogInfo($"Server settings: {Config.ConfigFilePath}");
             Logger.LogInfo(
                 $"Server Address: {serverAddress.Value}"
             );
@@ -212,81 +234,55 @@ namespace Orbit_Us
 
                 networkUDPConnection.HostConnection = false;
                 networkUDPConnection.Connect(
-                    serverAddress.Value,
-                    udpPort.Value
+                    room!=null?"127.0.0.1":serverAddress.Value,
+                    room!=null?room.LocalPort:udpPort.Value
                 );
 
-                playerReplicator =
-                    new PlayerReplicator(
-                        networkUDPConnection,
-                        playerSprite
-                    );
-                enemyReplicator =
-                    new EnemyReplicator(
-                        networkUDPConnection,
-                        false
-                    );
-
-                enemyReplicator.Initialize();
-                planetReplicator = new PlanetReplicator(networkUDPConnection, false);
-                planetReplicator.Initialize();
-                progressReplicator = new ProgressReplicator(networkUDPConnection, IsHost);
-                progressReplicator.Initialize();
-                combatReplicator=new CombatReplicator(networkUDPConnection,IsHost);
-                combatReplicator.Initialize();
-
-                playerReplicator.Initialize();
-
-                playerTracker =
-                    new PlayerTracker(
-                        networkUDPConnection,
-                        arrowSprite
-                    );
-
-                playerTracker.Initialize();
+                if(!menuLobby)InitializeReplication();
 
                 udpConnected = true;
-
-                Logger.LogInfo(
-                    "UDP player replication started."
-                );
-
-                Logger.LogInfo(
-                    "Player tracker started."
-                );
+                NetworkStatus="Connecting...";
             }
             catch (Exception ex)
             {
-                Logger.LogError(
-                    $"UDP connection failed: {ex.Message}"
-                );
-
-                combatReplicator?.Destroy();
-                combatReplicator = null;
-                progressReplicator?.Destroy();
-                progressReplicator = null;
-                planetReplicator?.Destroy();
-                planetReplicator = null;
-                enemyReplicator?.Destroy();
-                playerReplicator?.Destroy();
-                playerTracker?.Destroy();
-                networkUDPConnection.Disconnect();
-                MultiplayerActive = false;
-                IsHost = false;
-                udpConnected = false;
+                NetworkStatus=ex.Message;
+                Logger.LogError($"UDP connection failed: {ex.Message}");
+                LeaveSession();
             }
+        }
+
+        private void InitializeReplication()
+        {
+            if(replicationInitialized)return;
+            playerReplicator=new PlayerReplicator(networkUDPConnection,playerSprite);
+            enemyReplicator=new EnemyReplicator(networkUDPConnection,IsHost);
+            enemyReplicator.Initialize();
+            planetReplicator=new PlanetReplicator(networkUDPConnection,IsHost);
+            planetReplicator.Initialize();
+            progressReplicator=new ProgressReplicator(networkUDPConnection,IsHost);
+            progressReplicator.Initialize();
+            combatReplicator=new CombatReplicator(networkUDPConnection,IsHost);
+            combatReplicator.Initialize();
+            playerReplicator.Initialize();
+            playerTracker=new PlayerTracker(networkUDPConnection,arrowSprite);
+            playerTracker.Initialize();
+            replicationInitialized=true;
         }
 
         private void Update()
         {
+            UpdateRoom();
+            multiplayerMenu?.Update();
             // Let the wipe notification finish before starting another connection.
             if(teamGameOverApplied && udpConnected){UpdatePlayerReplication();return;}
             if (Input.GetKeyDown(KeyCode.F6))
             {
+                CloseRoom();menuLobby=false;
+                networkUDPServer.LoopbackClientsOnly=false;
                 RestartServers();
             }
 
-            if (Input.GetKeyDown(KeyCode.F7))
+            if (Input.GetKeyDown(KeyCode.F7) && !RoomRequested)
             {
                 ConnectToServer();
             }
@@ -329,6 +325,7 @@ namespace Orbit_Us
             networkUDPServer.Stop();
 
             udpConnected = false;
+            replicationInitialized=false;
 
             transformSendTimer = 0f;
 
@@ -336,96 +333,32 @@ namespace Orbit_Us
                 "Network servers stopped."
             );
 
-            networkServer.Start(
-                tcpPort.Value
-            );
-
-            Logger.LogInfo(
-                $"TCP Server Started on port {tcpPort.Value}"
-            );
-
-            _ = AcceptClient();
-
-            networkUDPServer.Start(
-                udpPort.Value
-            );
-
-            Logger.LogInfo(
-                $"UDP Server Started on port {udpPort.Value}"
-            );
-
-            Logger.LogInfo(
-                "Connecting host to local UDP server..."
-            );
-
             try
             {
+                networkServer.Start(tcpPort.Value);
+                _=AcceptClient();
+                networkUDPServer.Start(udpPort.Value);
                 networkUDPConnection.HostConnection = true;
                 networkUDPConnection.Connect(
                     "127.0.0.1",
                     udpPort.Value
                 );
 
-                playerReplicator =
-                    new PlayerReplicator(
-                        networkUDPConnection,
-                        playerSprite
-                    );
-                enemyReplicator =
-                    new EnemyReplicator(
-                        networkUDPConnection,
-                        true
-                    );
-
-                enemyReplicator.Initialize();
-                planetReplicator = new PlanetReplicator(networkUDPConnection, true);
-                planetReplicator.Initialize();
-                progressReplicator = new ProgressReplicator(networkUDPConnection, IsHost);
-                progressReplicator.Initialize();
-                combatReplicator=new CombatReplicator(networkUDPConnection,IsHost);
-                combatReplicator.Initialize();
-                
-                playerReplicator.Initialize();
-
-                playerTracker =
-                    new PlayerTracker(
-                        networkUDPConnection,
-                        arrowSprite
-                    );
-
-                playerTracker.Initialize();
+                if(!menuLobby)InitializeReplication();
 
                 udpConnected = true;
+                NetworkStatus="Hosting";
 
-                Logger.LogInfo(
-                    "Host UDP player replication started."
-                );
-
-                Logger.LogInfo(
-                    "Host player tracker started."
-                );
+                Logger.LogInfo($"Hosting on TCP {tcpPort.Value} / UDP {udpPort.Value}.");
             }
             catch (Exception ex)
             {
+                NetworkStatus=ex.Message;
                 Logger.LogError(
                     $"Host UDP connection failed: {ex.Message}"
                 );
 
-                combatReplicator?.Destroy();
-                combatReplicator = null;
-                progressReplicator?.Destroy();
-                progressReplicator = null;
-                planetReplicator?.Destroy();
-                planetReplicator = null;
-                enemyReplicator?.Destroy();
-                playerReplicator?.Destroy();
-                playerTracker?.Destroy();
-                networkUDPConnection.Disconnect();
-                networkUDPServer.Stop();
-                networkServer.Stop();
-                MultiplayerActive = false;
-                IsHost = false;
-                udpConnected = false;
+                LeaveSession();
             }
         }
         
@@ -463,6 +396,110 @@ namespace Orbit_Us
             }
         }
 
+        public void HostLobby()
+        {
+            if(udpConnected)return;
+            menuLobby=true;RestartServers();
+        }
+
+        public void HostDirectLobby(int port)
+        {networkUDPServer.LoopbackClientsOnly=false;udpPort.Value=port;HostLobby();}
+
+        public void BeginCodeRoom(string endpoint,string code,bool host)
+        {
+            if(udpConnected || RoomRequested)return;
+            try
+            {
+                endpoint=endpoint.Trim();int port=3478;
+                int colon=endpoint.LastIndexOf(':');
+                if(colon>=0){port=int.Parse(endpoint.Substring(colon+1));endpoint=endpoint.Substring(0,colon);}
+                if(endpoint.Length==0 || port<1 || port>65535)throw new ArgumentException("Enter the matchmaking server address and port.");
+                if(!host)code=RoomProtocol.NormalizeCode(code);
+                matchmakingAddress.Value=endpoint;matchmakingPort.Value=port;
+                if(host){networkUDPServer.LoopbackClientsOnly=true;HostLobby();if(!udpConnected)return;}
+                roomTask=RoomTransport.CreateAsync(endpoint,port,host,code,matchmakingAccess.Value,udpPort.Value);
+                NetworkStatus="Contacting matchmaking server...";
+            }
+            catch(Exception ex){NetworkStatus=ex.Message;}
+        }
+        private void UpdateRoom()
+        {
+            if(roomTask!=null && roomTask.IsCompleted)
+            {
+                var completed=roomTask;roomTask=null;
+                if(completed.IsFaulted){NetworkStatus=completed.Exception.GetBaseException().Message;LeaveSession();return;}
+                room=completed.Result;
+            }
+            if(room==null)return;
+            try{room.Tick();}
+            catch(Exception ex){NetworkStatus=ex.Message;LeaveSession();return;}
+            if(room.EndedReason.Length>0)
+            {
+                bool gameplay=GameplayConnected;NetworkStatus=room.EndedReason;LeaveSession();
+                if(gameplay)ReturnToMenu();return;
+            }
+            if(!room.IsHost && room.Accepted && !udpConnected){menuLobby=true;StartUDPClient();}
+        }
+        private void CloseRoom()
+        {
+            room?.Dispose();room=null;
+            if(roomTask!=null)
+            {
+                _=roomTask.ContinueWith(t=>{if(t.Status==TaskStatus.RanToCompletion)t.Result.Dispose();else{var ignored=t.Exception;}},TaskScheduler.Default);
+                roomTask=null;
+            }
+        }
+        private void ReturnToMenu()
+        {
+            var scene=UnityEngine.SceneManagement.SceneManager.GetActiveScene();
+            UnityEngine.SceneManagement.SceneManager.LoadSceneAsync(scene.buildIndex);
+        }
+
+        public void JoinLobby(string address,int port)
+        {
+            if(udpConnected)return;
+            serverAddress.Value=address.Trim();udpPort.Value=port;
+            menuLobby=true;StartUDPClient();
+        }
+
+        public void StartLobbyGame()
+        {
+            if(!udpConnected || networkUDPConnection.LocalPlayerId<=0 || replicationInitialized)return;
+            if(!IsHost && !networkUDPConnection.LobbyStarted)return;
+            var start=UnityEngine.Object.FindObjectOfType<startManager>(true);
+            if(start==null){NetworkStatus="Game menu is not ready.";return;}
+            if(IsHost)_=networkUDPConnection.SetLobbyStarted();
+            start.StartGameQuick();
+        }
+
+        public bool CanStartGame()=>RoomRequested && room?.IsHost!=true && !networkUDPConnection.LobbyStarted?false:
+            !udpConnected || IsHost || networkUDPConnection.LobbyStarted;
+        public void OnGameStarted()
+        {
+            if(!udpConnected || replicationInitialized)return;
+            try
+            {
+                if(IsHost)_=networkUDPConnection.SetLobbyStarted();
+                InitializeReplication();menuLobby=false;
+            }
+            catch(Exception ex){NetworkStatus=ex.Message;Logger.LogError(ex);LeaveSession();}
+        }
+
+        public void LeaveSession()
+        {
+            CloseRoom();
+            combatReplicator?.Destroy();combatReplicator=null;
+            progressReplicator?.Destroy();progressReplicator=null;
+            planetReplicator?.Destroy();planetReplicator=null;
+            enemyReplicator?.Destroy();enemyReplicator=null;
+            playerTracker?.Destroy();playerTracker=null;
+            playerReplicator?.Destroy();playerReplicator=null;
+            networkUDPConnection?.Disconnect();networkManager?.Disconnect();
+            networkUDPServer?.Stop();networkServer?.Stop();
+            udpConnected=false;replicationInitialized=false;menuLobby=false;
+            MultiplayerActive=false;IsHost=false;transformSendTimer=0;lobbyStartRetry=0;
+        }
+
         private void UpdatePlayerReplication()
         {
             if (!udpConnected)
@@ -472,22 +509,21 @@ namespace Orbit_Us
             if(playerReplicator?.RunEnded==true){UpdateTeamGameOver();return;}
             if (!networkUDPConnection.IsConnected)
             {
-                playerReplicator?.Destroy();
-                playerReplicator = null;
-                playerTracker?.Destroy();
-                playerTracker = null;
-                combatReplicator?.Destroy();
-                combatReplicator = null;
-                progressReplicator?.Destroy();
-                progressReplicator = null;
-                planetReplicator?.Destroy();
-                planetReplicator = null;
-                enemyReplicator?.Destroy();
-                enemyReplicator = null;
-                udpConnected = false;
-                MultiplayerActive = false;
-                IsHost = false;
+                bool gameplay=replicationInitialized;
+                NetworkStatus=networkUDPConnection.DisconnectReason;
+                LeaveSession();
+                if(gameplay && NetworkStatus.Length>0)ReturnToMenu();
                 return;
+            }
+            if(menuLobby && !replicationInitialized)
+            {
+                if(networkUDPConnection.LobbyStarted)StartLobbyGame();
+                return;
+            }
+            if(IsHost && !networkUDPConnection.LobbyStarted)
+            {
+                lobbyStartRetry+=Time.unscaledDeltaTime;
+                if(lobbyStartRetry>=0.5f){lobbyStartRetry=0;_=networkUDPConnection.SetLobbyStarted();}
             }
 
             if (playerReplicator != null)
@@ -572,7 +608,8 @@ namespace Orbit_Us
             playerReplicator.Destroy();playerReplicator=null;
             networkUDPConnection.Disconnect();networkManager.Disconnect();
             networkUDPServer.Stop();networkServer.Stop();
-            udpConnected=false;teamGameOverApplied=false;transformSendTimer=0;
+            CloseRoom();
+            udpConnected=false;replicationInitialized=false;menuLobby=false;teamGameOverApplied=false;transformSendTimer=0;
         }
 
         private async void SendLocalPlayerTransform()
@@ -611,6 +648,7 @@ namespace Orbit_Us
 
         private void OnGUI()
         {
+            multiplayerMenu?.Draw();
             if(!udpConnected || teamGameOverApplied)return;
             playerReplicator?.DrawNameplates();
             playerReplicator?.DrawRecallCountdown();
@@ -626,6 +664,8 @@ namespace Orbit_Us
 
         private void OnDestroy()
         {
+            CloseRoom();
+            multiplayerMenu?.Dispose();
             if(Instance==this)Instance=null;
             if(teleportSound!=null)UnityEngine.Object.Destroy(teleportSound);
             combatReplicator?.Destroy();

@@ -19,6 +19,7 @@ namespace Orbit_Us
         private int nextPlayerId;
         private readonly object lifecycle = new object();
         private IPEndPoint[] destinations = new IPEndPoint[0];
+        public bool LoopbackClientsOnly {get;set;}
         public void Start(int port)
         {
             Stop();
@@ -48,6 +49,12 @@ namespace Orbit_Us
             var combatFrames=new Dictionary<IPEndPoint,CombatSnapshotCodec.Assembler>();
             var progressSnapshots = new SortedDictionary<int, CachedPlanetSnapshot>();
             var lastProgressRepair = new Dictionary<IPEndPoint, DateTime>();
+            var probes=new Dictionary<IPEndPoint,long>();
+            var pings=new Dictionary<IPEndPoint,int>();
+            var pingTimes=new Dictionary<IPEndPoint,DateTime>();
+            var kicked=new Dictionary<IPEndPoint,DateTime>();
+            var kickOrder=new Queue<IPEndPoint>();
+            bool lobbyStarted=false;
             Task<UdpReceiveResult> receive = socket.ReceiveAsync();
             Task tick = Task.Delay(1000);
             int rosterRevision = 0;
@@ -69,6 +76,7 @@ namespace Orbit_Us
                             lastSeen.Remove(endpoint);
                             lastPlanetRepair.Remove(endpoint);lastEnemyRepair.Remove(endpoint);
                             lastProgressRepair.Remove(endpoint);
+                            probes.Remove(endpoint);pings.Remove(endpoint);pingTimes.Remove(endpoint);
                             if (endpoint.Equals(hostEndpoint))
                             {
                                 hostEndpoint = null;
@@ -94,6 +102,33 @@ namespace Orbit_Us
                         {
                             Type = PacketType.PlayerRoster, Data = roster
                         }), null);
+                        // One server-clock round trip per second. No client clocks or reported ping values are trusted.
+                        foreach(var endpoint in clients.Keys)
+                        {
+                            long now=DateTime.UtcNow.Ticks;
+                            if(probes.TryGetValue(endpoint,out long pending) && now-pending<TimeSpan.FromSeconds(5).Ticks)continue;
+                            probes[endpoint]=now;
+                            byte[] probe=PacketSerializer.Serialize(new NetworkPacket {Type=PacketType.LatencyProbe,Data=BitConverter.GetBytes(now)});
+                            await socket.SendAsync(probe,probe.Length,endpoint);
+                        }
+                        var latency=new List<byte>();
+                        foreach(var client in clients)
+                        {
+                            if(!pings.TryGetValue(client.Key,out int ms) || !pingTimes.TryGetValue(client.Key,out DateTime at) ||
+                                (DateTime.UtcNow-at).TotalSeconds>=5)continue;
+                            latency.AddRange(BitConverter.GetBytes(client.Value));latency.AddRange(BitConverter.GetBytes(ms));
+                            if(latency.Count==512)
+                            {
+                                await Broadcast(socket,clients,PacketSerializer.Serialize(new NetworkPacket {Type=PacketType.PlayerLatency,Data=latency.ToArray()}),null);
+                                latency.Clear();
+                            }
+                        }
+                        if(latency.Count>0)await Broadcast(socket,clients,PacketSerializer.Serialize(new NetworkPacket {Type=PacketType.PlayerLatency,Data=latency.ToArray()}),null);
+                        if(hostEndpoint!=null && clients.TryGetValue(hostEndpoint,out int hostId))
+                        {
+                            byte[] state=new byte[5];Buffer.BlockCopy(BitConverter.GetBytes(hostId),0,state,0,4);state[4]=lobbyStarted?(byte)1:(byte)0;
+                            await Broadcast(socket,clients,PacketSerializer.Serialize(new NetworkPacket {Type=PacketType.LobbyState,Data=state}),null);
+                        }
                     }
                     if (!receive.IsCompleted) continue;
                     UdpReceiveResult result;
@@ -117,6 +152,16 @@ namespace Orbit_Us
                         PacketSerializer.Deserialize(
                             result.Buffer
                         );
+                    if(kicked.TryGetValue(sender,out DateTime lastKick))
+                    {
+                        if((DateTime.UtcNow-lastKick).TotalSeconds>=0.5)
+                        {
+                            kicked[sender]=DateTime.UtcNow;
+                            byte[] notice=PacketSerializer.Serialize(new NetworkPacket {Type=PacketType.PlayerKicked,Data=new byte[0]});
+                            await socket.SendAsync(notice,notice.Length,sender);
+                        }
+                        continue;
+                    }
 
                     //Console.WriteLine(
                     //    $"UDP packet type: {packet.Type}"
@@ -125,6 +170,7 @@ namespace Orbit_Us
                     if (packet.Type ==
                         PacketType.PlayerConnect)
                     {
+                        if(LoopbackClientsOnly && !IPAddress.IsLoopback(sender.Address))continue;
                         if (packet.Data.Length != 1 || packet.Data[0] > 1)
                             continue;
                         if (packet.Data[0] == 1)
@@ -147,6 +193,48 @@ namespace Orbit_Us
                     // Late datagrams after disconnect/restart are expected.
                     if (!clients.ContainsKey(sender)) continue;
                     lastSeen[sender] = DateTime.UtcNow;
+                    if(packet.Type==PacketType.LatencyReply && packet.Data.Length==8)
+                    {
+                        long stamp=BitConverter.ToInt64(packet.Data,0);
+                        if(probes.TryGetValue(sender,out long expected) && stamp==expected)
+                        {
+                            double elapsed=(DateTime.UtcNow.Ticks-stamp)/(double)TimeSpan.TicksPerMillisecond;
+                            if(elapsed>=0 && elapsed<=10000)
+                            {
+                                int ms=(int)Math.Round(elapsed);
+                                pings[sender]=pings.TryGetValue(sender,out int old)?(old*3+ms)/4:ms;
+                                pingTimes[sender]=DateTime.UtcNow;probes.Remove(sender);
+                            }
+                        }
+                        continue;
+                    }
+                    if(packet.Type==PacketType.KeepAlive)
+                    {
+                        byte[] reply=PacketSerializer.Serialize(new NetworkPacket {Type=PacketType.KeepAliveResponse,Data=new byte[0]});
+                        await socket.SendAsync(reply,reply.Length,sender);continue;
+                    }
+                    if(packet.Type==PacketType.LobbyState)
+                    {
+                        if(sender.Equals(hostEndpoint) && packet.Data.Length==1 && packet.Data[0]==1)lobbyStarted=true;
+                        continue;
+                    }
+                    if(packet.Type==PacketType.HostKick)
+                    {
+                        if(!sender.Equals(hostEndpoint) || packet.Data.Length!=4)continue;
+                        int target=BitConverter.ToInt32(packet.Data,0);IPEndPoint victim=null;
+                        foreach(var client in clients)if(client.Value==target && !client.Key.Equals(hostEndpoint)){victim=client.Key;break;}
+                        if(victim==null)continue;
+                        if(kicked.Count>=256)kicked.Remove(kickOrder.Dequeue());
+                        kicked[victim]=DateTime.UtcNow;kickOrder.Enqueue(victim);
+                        clients.Remove(victim);lastSeen.Remove(victim);sequences.Remove(victim);combatFrames.Remove(victim);
+                        lastPlanetRepair.Remove(victim);lastEnemyRepair.Remove(victim);lastProgressRepair.Remove(victim);
+                        probes.Remove(victim);pings.Remove(victim);pingTimes.Remove(victim);
+                        lock(lifecycle)if(ReferenceEquals(socket,udpServer))destinations=new List<IPEndPoint>(clients.Keys).ToArray();
+                        byte[] notice=PacketSerializer.Serialize(new NetworkPacket {Type=PacketType.PlayerKicked,Data=new byte[0]});
+                        await socket.SendAsync(notice,notice.Length,victim);
+                        await Broadcast(socket,clients,PacketSerializer.Serialize(new NetworkPacket {Type=PacketType.PlayerDisconnected,Data=BitConverter.GetBytes(target)}),null);
+                        continue;
+                    }
                     if (packet.Type == PacketType.PlayerDisconnected && packet.Data.Length == 0)
                     {
                         int departed = clients[sender];
@@ -156,6 +244,7 @@ namespace Orbit_Us
                         lastProgressRepair.Remove(sender);
                         sequences.Remove(sender);
                         combatFrames.Remove(sender);
+                        probes.Remove(sender);pings.Remove(sender);pingTimes.Remove(sender);
                         if (sender.Equals(hostEndpoint))
                         {
                             hostEndpoint = null;

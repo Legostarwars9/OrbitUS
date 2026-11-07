@@ -456,7 +456,8 @@ namespace Orbit_Us
             bool alive=!local.dead && !Life.IsSpectating;
             Vector2 position=Life.IsSpectating?Life.DeathPosition:(Vector2)local.transform.position;
             Vector2 velocity=alive?local.rb.velocity:Vector2.zero;
-            return connection.SendPlayerState(position.x,position.y,local.transform.eulerAngles.z,velocity.x,velocity.y,alive);
+            return connection.SendPlayerVitals(position.x,position.y,local.transform.eulerAngles.z,velocity.x,velocity.y,alive,
+                alive?Mathf.Clamp(local.hp,0,local.hpMax):0,local.hpMax,Mathf.Clamp(local.fuel,0,local.fuelCap),local.fuelCap);
         }
         public Transform SpectatorTarget()
         {
