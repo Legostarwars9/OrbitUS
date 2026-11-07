@@ -15,6 +15,7 @@
         <TargetFrameworkVersion>v4.7.1</TargetFrameworkVersion>
         <FrameworkPathOverride>/usr/lib/mono/4.7.1-api</FrameworkPathOverride>
         <FileAlignment>512</FileAlignment>
+        <DisableFastUpToDateCheck>true</DisableFastUpToDateCheck>
     </PropertyGroup>
     <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
         <PlatformTarget>AnyCPU</PlatformTarget>
@@ -58,12 +59,9 @@
         <Compile Include="ProgressionSyncing\EndingPresentation.cs" />
         <Compile Include="ProgressionSyncing\ProgressSyncPatches.cs" />
 
-        <Compile Include="Networking\NetworkConnection.cs" />
         <Compile Include="Networking\RoomProtocol.cs" />
         <Compile Include="Networking\RoomTransport.cs" />
-        <Compile Include="Networking\NetworkManager.cs" />
         <Compile Include="Networking\NetworkPacket.cs" />
-        <Compile Include="Networking\NetworkServer.cs" />
         <Compile Include="Networking\NetworkUDPConnection.cs" />
         <Compile Include="Networking\NetworkUDPServer.cs" />
         <Compile Include="Networking\PacketSerializer.cs" />
@@ -194,10 +192,24 @@
         </Reference>
         <UnityReferences Include="$(OrbitUsGameDir)/OrbitousLinux_Data/Managed/UnityEngine*.dll" />
     </ItemGroup>
-    <Target Name="CopyModToBepInEx" AfterTargets="Build" Condition="'$(CopyModToBepInExEnabled)' != 'false'">
+    <!-- Build must produce a fresh mod, even when a previous command-line build
+         has left the IDE's compilation inputs marked as up-to-date. -->
+    <Target Name="RefreshModBuild" BeforeTargets="CoreCompile"
+            Condition="'$(DesignTimeBuild)' != 'true' and '$(BuildingProject)' == 'true'">
+        <Touch Files="$(IntermediateOutputPath)OrbitUs.buildstamp" AlwaysCreate="true" ForceTouch="true" />
+        <ItemGroup>
+            <CustomAdditionalCompileInputs Include="$(IntermediateOutputPath)OrbitUs.buildstamp" />
+            <FileWrites Include="$(IntermediateOutputPath)OrbitUs.buildstamp" />
+        </ItemGroup>
+    </Target>
+    <Target Name="CopyModToBepInEx" AfterTargets="Build"
+            Condition="'$(DesignTimeBuild)' != 'true' and '$(CopyModToBepInExEnabled)' != 'false'">
         <Copy
             SourceFiles="$(TargetPath)"
             DestinationFolder="$(OrbitUsGameDir)/BepInEx/plugins/"
+            SkipUnchangedFiles="false"
             />
+        <Message Importance="high" Text="Built mod: $(TargetPath)" />
+        <Message Importance="high" Text="Installed mod: $(OrbitUsGameDir)/BepInEx/plugins/$(TargetFileName)" />
         </Target>
 </Project>

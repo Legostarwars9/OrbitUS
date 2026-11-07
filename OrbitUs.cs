@@ -4,8 +4,6 @@ namespace Orbit_Us
     using BepInEx.Configuration;
     using System.IO;
     using UnityEngine;
-    using System.Net.Sockets;
-    using System.Text;
     using System;
     using System.Threading.Tasks;
     using HarmonyLib;
@@ -13,9 +11,6 @@ namespace Orbit_Us
     [BepInPlugin("com.legostarwars9.orbit-us", "Orbit-Us", "0.4.0")]
     public class OrbitUs : BaseUnityPlugin
     {
-        private NetworkServer networkServer;
-        private NetworkManager networkManager;
-
         private NetworkUDPServer networkUDPServer;
         private NetworkUDPConnection networkUDPConnection;
 
@@ -55,7 +50,6 @@ namespace Orbit_Us
         private const float TransformSendRate = 0.025f;
 
         private ConfigEntry<string> serverAddress;
-        private ConfigEntry<int> tcpPort;
         private ConfigEntry<int> udpPort;
         internal static bool MultiplayerActive { get; private set; }
         internal static bool IsHost { get; private set; }
@@ -83,27 +77,19 @@ namespace Orbit_Us
             teleportSound=gameObject.AddComponent<TeleportSound>();
             teleportSound.Initialize(Path.Combine(Path.GetDirectoryName(Info.Location),"Orbit_Us-Assets","teleport.wav"));
 
-            networkManager =
-                new NetworkManager();
-
-            networkServer =
-                new NetworkServer();
-
             networkUDPServer =
                 new NetworkUDPServer();
 
             networkUDPConnection =
                 new NetworkUDPConnection();
 
-            networkServer.OnClientConnected +=
-                ClientConnected;
             multiplayerMenu=new MultiplayerMenu(this,serverAddress.Value,udpPort.Value);
         }
 
         private void LoadConfig()
         {
-            matchmakingAddress=Config.Bind("Matchmaking","ServerAddress","","IP address or DNS name of your running OrbitUS-P2P-Server, without a URL scheme or port. All players use the same server.");
-            matchmakingPort=Config.Bind("Matchmaking","Port",3478,
+            matchmakingAddress=Config.Bind("Matchmaking","ServerAddress","orbitstun.legostarwars9.com","IP address or DNS name of your running OrbitUS-P2P-Server, without a URL scheme or port. All players use the same server.");
+            matchmakingPort=Config.Bind("Matchmaking","Port",12415,
                 new ConfigDescription("UDP port of OrbitUS-P2P-Server. This is separate from the game's direct-connection ports.",new AcceptableValueRange<int>(1,65535)));
             matchmakingAccess=Config.Bind("Matchmaking","AccessKey","","Optional ORBITUS_ACCESS_KEY configured by the server operator.");
             serverAddress =
@@ -112,14 +98,6 @@ namespace Orbit_Us
                     "ServerAddress",
                     "[Put IP address Here]",
                     "Host IP address or DNS name for Direct IP / VPN and F7 joining. Room codes use Matchmaking.ServerAddress instead."
-                );
-
-            tcpPort =
-                Config.Bind(
-                    "Network",
-                    "TCPPort",
-                    7777,
-                    new ConfigDescription("TCP port for the legacy F6/F7 connection.",new AcceptableValueRange<int>(1,65535))
                 );
 
             udpPort =
@@ -137,81 +115,8 @@ namespace Orbit_Us
             );
 
             Logger.LogInfo(
-                $"TCP Port: {tcpPort.Value}"
-            );
-
-            Logger.LogInfo(
                 $"UDP Port: {udpPort.Value}"
             );
-        }
-
-        private void ClientConnected(
-            TcpClient client)
-        {
-            Logger.LogInfo(
-                "TCP client connected!"
-            );
-        }
-
-        private async Task AcceptClient()
-        {
-            try
-            {
-                await networkServer.AcceptConnection();
-
-                Logger.LogInfo(
-                    "Finished handling TCP client connection."
-                );
-            }
-            catch (Exception ex)
-            {
-                Logger.LogError(
-                    $"Network server error: {ex}"
-                );
-            }
-        }
-
-        private async void TestConnection()
-        {
-            try
-            {
-                NetworkPacket packet =
-                    await networkManager.Connect(
-                        serverAddress.Value,
-                        tcpPort.Value
-                    );
-
-                Logger.LogInfo(
-                    "TCP connected to server!"
-                );
-
-                Logger.LogInfo(
-                    $"Received packet type: {packet.Type}"
-                );
-
-                string message =
-                    Encoding.UTF8.GetString(
-                        packet.Data
-                    );
-
-                Logger.LogInfo(
-                    $"Packet data: {message}"
-                );
-
-                networkManager.StartKeepAlive();
-
-                Logger.LogInfo(
-                    "KeepAlive monitoring started."
-                );
-            }
-            catch (Exception ex)
-            {
-                Logger.LogError(
-                    $"TCP connection failed: {ex.Message}"
-                );
-
-                networkManager.Disconnect();
-            }
         }
 
         private void StartUDPClient()
@@ -295,7 +200,7 @@ namespace Orbit_Us
             MultiplayerActive = true;
             IsHost = true;
             Logger.LogInfo(
-                "Restarting network servers..."
+                "Restarting UDP server..."
             );
 
             playerTracker?.Destroy();
@@ -316,11 +221,7 @@ namespace Orbit_Us
 
             enemyReplicator = null;
 
-            networkManager.Disconnect();
-
             networkUDPConnection.Disconnect();
-
-            networkServer.Stop();
 
             networkUDPServer.Stop();
 
@@ -330,13 +231,11 @@ namespace Orbit_Us
             transformSendTimer = 0f;
 
             Logger.LogInfo(
-                "Network servers stopped."
+                "UDP server stopped."
             );
 
             try
             {
-                networkServer.Start(tcpPort.Value);
-                _=AcceptClient();
                 networkUDPServer.Start(udpPort.Value);
                 networkUDPConnection.HostConnection = true;
                 networkUDPConnection.Connect(
@@ -349,7 +248,7 @@ namespace Orbit_Us
                 udpConnected = true;
                 NetworkStatus="Hosting";
 
-                Logger.LogInfo($"Hosting on TCP {tcpPort.Value} / UDP {udpPort.Value}.");
+                Logger.LogInfo($"Hosting on UDP {udpPort.Value}; UDP keepalives enabled.");
             }
             catch (Exception ex)
             {
@@ -365,21 +264,6 @@ namespace Orbit_Us
 
         private void ConnectToServer()
         {
-            if (!networkManager.IsConnected)
-            {
-                Logger.LogInfo(
-                    "Connecting TCP to server..."
-                );
-
-                TestConnection();
-            }
-            else
-            {
-                Logger.LogInfo(
-                    "Already connected to TCP server."
-                );
-            }
-
             if (!udpConnected)
             {
                 Logger.LogInfo(
@@ -494,8 +378,8 @@ namespace Orbit_Us
             enemyReplicator?.Destroy();enemyReplicator=null;
             playerTracker?.Destroy();playerTracker=null;
             playerReplicator?.Destroy();playerReplicator=null;
-            networkUDPConnection?.Disconnect();networkManager?.Disconnect();
-            networkUDPServer?.Stop();networkServer?.Stop();
+            networkUDPConnection?.Disconnect();
+            networkUDPServer?.Stop();
             udpConnected=false;replicationInitialized=false;menuLobby=false;
             MultiplayerActive=false;IsHost=false;transformSendTimer=0;lobbyStartRetry=0;
         }
@@ -606,8 +490,8 @@ namespace Orbit_Us
             // Retain only the connection/acknowledgements until the end notice is delivered.
             if(networkUDPConnection.IsConnected && !playerReplicator.FinishWipeDelivery())return;
             playerReplicator.Destroy();playerReplicator=null;
-            networkUDPConnection.Disconnect();networkManager.Disconnect();
-            networkUDPServer.Stop();networkServer.Stop();
+            networkUDPConnection.Disconnect();
+            networkUDPServer.Stop();
             CloseRoom();
             udpConnected=false;replicationInitialized=false;menuLobby=false;teamGameOverApplied=false;transformSendTimer=0;
         }
@@ -680,10 +564,6 @@ namespace Orbit_Us
             playerTracker?.Destroy();
 
             playerReplicator?.Destroy();
-
-            networkManager?.Disconnect();
-
-            networkServer?.Stop();
 
             networkUDPConnection?.Disconnect();
 
