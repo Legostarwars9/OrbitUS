@@ -11,7 +11,7 @@ namespace Orbit_Us
 {
     public sealed class RoomPeerInfo
     {
-        public string Id,State;
+        public string Id,State,Name;
         public int PlayerId;
         public bool Queued;
     }
@@ -21,7 +21,7 @@ namespace Orbit_Us
     {
         private sealed class Peer
         {
-            public string Id;
+            public string Id,Name="";
             public byte[] Key,Nonce;
             public ulong Outgoing;
             public readonly ReplayWindow Incoming=new ReplayWindow();
@@ -43,10 +43,11 @@ namespace Orbit_Us
         private readonly object[][] lan;
         private string code,cookie="",status="Contacting matchmaking server...",ended="";
         private long revision;
-        private bool disposed,accepted;
+        private bool disposed,accepted,registrationRetryRequested;
         private DateTime lastRegistration,lastSignal,created=DateTime.UtcNow;
         private IPEndPoint localClient;
         public bool IsHost=>host;
+        public string LocalUsername {get;set;}="";
         public string Code {get{lock(gate)return code;}}
         public string Status {get{lock(gate)return status;}}
         public string EndedReason {get{lock(gate)return ended;}}
@@ -84,7 +85,7 @@ namespace Orbit_Us
         }
         public List<RoomPeerInfo> GetPeers()
         {
-            lock(gate)return peers.Values.Select(p=>new RoomPeerInfo {Id=p.Id,PlayerId=p.PlayerId,
+            lock(gate)return peers.Values.Select(p=>new RoomPeerInfo {Id=p.Id,PlayerId=p.PlayerId,Name=p.Name.Length>0?p.Name:p.Id.Substring(0,6),
                 Queued=p.Endpoint!=null && !p.Approved && !p.Rejected,
                 State=p.Rejected?"Declined":p.Endpoint==null?"Connecting":p.PlayerId>0?"Connected":p.Approved?"Joining":"Queued"}).ToList();
         }
@@ -104,7 +105,11 @@ namespace Orbit_Us
             {
                 if(disposed || ended.Length>0)return;
                 DateTime now=DateTime.UtcNow;
-                if((now-lastRegistration).TotalSeconds>=2){lastRegistration=now;Register(host?"host":"join");}
+                double sinceRegistration=(now-lastRegistration).TotalSeconds;
+                if(sinceRegistration>=2 || (registrationRetryRequested && sinceRegistration>=0.25))
+                {
+                    registrationRetryRequested=false;lastRegistration=now;Register(host?"host":"join");
+                }
                 if((now-created).TotalSeconds>12 && lastSignal==default(DateTime))status="No reply from matchmaking server. Check its address and UDP port.";
                 else if(lastSignal!=default(DateTime) && (now-lastSignal).TotalSeconds>10)status="Matchmaking connection interrupted; retrying...";
                 foreach(var peer in peers.Values)
@@ -113,11 +118,13 @@ namespace Orbit_Us
                     if(peer.Rejected){if(peer.Endpoint!=null)SendPeer(peer,4,new byte[0],peer.Endpoint);continue;}
                     if(peer.Nonce==null || (now-peer.NonceAt).TotalSeconds>5)
                     {peer.Nonce=RoomProtocol.Hex(RoomProtocol.RandomHex(8),8);peer.NonceAt=now;}
+                    byte[] name=System.Text.Encoding.UTF8.GetBytes(PlayerNames.Normalize(LocalUsername));
+                    byte[] probe=new byte[8+name.Length];Buffer.BlockCopy(peer.Nonce,0,probe,0,8);Buffer.BlockCopy(name,0,probe,8,name.Length);
                     if(peer.Endpoint==null)
-                        foreach(var candidate in peer.Candidates)SendPeer(peer,1,peer.Nonce,candidate);
+                        foreach(var candidate in peer.Candidates)SendPeer(peer,1,probe,candidate);
                     else
                     {
-                        SendPeer(peer,1,peer.Nonce,peer.Endpoint);
+                        SendPeer(peer,1,probe,peer.Endpoint);
                         if(host && peer.Approved)SendPeer(peer,3,new byte[0],peer.Endpoint);
                     }
                     if(peer.Endpoint==null && (now-created).TotalSeconds>15)
@@ -127,7 +134,7 @@ namespace Orbit_Us
         }
         private void Register(string op)
         {
-            var data=RoomProtocol.Request(new RoomMessage {Op=op,Room=code,Id=identity,Auth=auth,Cookie=cookie,Access=access,
+            var data=RoomProtocol.Request(new RoomMessage {Op=op,Room=code,Id=identity,Auth=auth,Cookie=cookie??"",Access=access,
                 Turn=false,Lan=lan,RelayPort=0});
             SendPublic(data,server);
         }
@@ -151,7 +158,15 @@ namespace Orbit_Us
                         else HandlePeer(received.Buffer,received.RemoteEndPoint);
                     }
                     catch(Exception ex) when(ex is System.IO.InvalidDataException || ex is SerializationException || ex is FormatException || ex is OverflowException || ex is ArgumentException || ex is SocketException || ex is ObjectDisposedException)
-                    { /* Invalid datagrams do not change membership. */ }
+                    {
+                        if(received.RemoteEndPoint.Equals(server))
+                        {
+                            string error="Could not read matchmaking reply ("+ex.GetType().Name+"). Retrying...";
+                            if(status!=error)Console.WriteLine("[Orbit-Us] "+error);
+                            status=error;
+                        }
+                        // Invalid peer datagrams do not change membership.
+                    }
                 }
             }
         }
@@ -160,7 +175,11 @@ namespace Orbit_Us
             var message=RoomProtocol.ReadReply(bytes,authBytes,out bool challenge);if(message==null)return;
             if(challenge)
             {
-                if(message.Op=="challenge" && message.Cookie?.Length==64){RoomProtocol.Hex(message.Cookie,32);cookie=message.Cookie;}
+                if(cookie!=message.Cookie)
+                {
+                    cookie=message.Cookie;registrationRetryRequested=true;
+                    Console.WriteLine("[Orbit-Us] Rendezvous cookie received; retrying registration with the cookie.");
+                }
                 return;
             }
             if(message.Revision>0){if(message.Revision<=revision)return;revision=message.Revision;}
@@ -209,9 +228,10 @@ namespace Orbit_Us
             if(bytes.Length<RoomProtocol.Overhead)return;
             string id=BitConverter.ToString(bytes,4,16).Replace("-","").ToLowerInvariant();
             if(!peers.TryGetValue(id,out Peer peer) || !RoomProtocol.ReadFrame(bytes,peer.Key,peer.Incoming,out byte kind,out byte[] payload))return;
-            if(kind==1 && payload.Length==8)
+            if(kind==1 && payload.Length>=8 && payload.Length<=8+PlayerNames.MaxBytes)
             {
-                SendPeer(peer,peer.Rejected?(byte)4:(byte)2,peer.Rejected?new byte[0]:payload,sender);return;
+                peer.Name=PlayerNames.Normalize(System.Text.Encoding.UTF8.GetString(payload,8,payload.Length-8));
+                SendPeer(peer,peer.Rejected?(byte)4:(byte)2,peer.Rejected?new byte[0]:payload.Take(8).ToArray(),sender);return;
             }
             if(kind==2 && peer.Nonce!=null && payload.SequenceEqual(peer.Nonce) && !peer.Rejected)
             {

@@ -523,14 +523,14 @@ namespace Orbit_Us
                 if (distance < 1000f)
                 {
                     label.text =
-                        $"Player {playerId}: " +
+                        connection.GetPlayerName(playerId)+": " +
                         distance.ToString("0") +
                         "m";
                 }
                 else
                 {
                     label.text =
-                        $"Player {playerId}: " +
+                        connection.GetPlayerName(playerId)+": " +
                         (distance / 1000f)
                             .ToString("0.0") +
                         "km";

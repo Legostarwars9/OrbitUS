@@ -5,7 +5,7 @@ namespace Orbit_Us
     // Uses the newest relay-authenticated host motion, without Unity dependencies.
     public sealed class HostRecallState
     {
-        public const float MaximumDistance=15000f;
+        public const float MaximumDistance=10000f;
         public const double CountdownSeconds=5;
         private const double MaximumAge=1.0;
         private PlayerTransformData host;

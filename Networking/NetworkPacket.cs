@@ -35,7 +35,8 @@ namespace Orbit_Us
         PlayerLatency,
         HostKick,
         PlayerKicked,
-        LobbyState
+        LobbyState,
+        PlayerName
     }
 
     public class NetworkPacket

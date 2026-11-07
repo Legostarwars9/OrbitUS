@@ -14,11 +14,17 @@ namespace Orbit_Us
         [DataMember(Name="room",EmitDefaultValue=false)] public string Room;
         [DataMember(Name="id",EmitDefaultValue=false)] public string Id;
         [DataMember(Name="auth",EmitDefaultValue=false)] public string Auth;
-        [DataMember(Name="cookie",EmitDefaultValue=false)] public string Cookie;
+        [DataMember(Name="cookie")] public string Cookie {get;set;}
         [DataMember(Name="access",EmitDefaultValue=false)] public string Access;
         [DataMember(Name="turn")] public bool Turn;
         [DataMember(Name="lan",EmitDefaultValue=false)] public object[][] Lan;
         [DataMember(Name="relay_port")] public int RelayPort;
+    }
+    [DataContract]
+    internal sealed class RoomChallenge
+    {
+        [DataMember(Name="op")] public string Op {get;set;}
+        [DataMember(Name="cookie")] public string Cookie {get;set;}
     }
     [DataContract]
     internal sealed class RoomReply
@@ -50,6 +56,7 @@ namespace Orbit_Us
     public static class RoomProtocol
     {
         public const int HeaderLength=29,Overhead=61;
+        private const int SignalPrefixLength=4,SignalSignatureLength=32;
         public static string RandomHex(int count)
         {
             byte[] bytes=new byte[count];using(var rng=RandomNumberGenerator.Create())rng.GetBytes(bytes);
@@ -81,20 +88,32 @@ namespace Orbit_Us
         internal static RoomReply ReadReply(byte[] data,byte[] auth,out bool challenge)
         {
             challenge=false;if(data==null || data.Length<5 || data.Length>1400)return null;
-            string magic=Encoding.ASCII.GetString(data,0,4);int offset;
-            if(magic=="OUC1"){challenge=true;offset=4;}
-            else if(magic=="OUS1" && data.Length>36)
+            string magic=Encoding.ASCII.GetString(data,0,SignalPrefixLength);int offset;
+            if(magic=="OUC1"){challenge=true;offset=SignalPrefixLength;}
+            else if(magic=="OUS1" && data.Length>SignalPrefixLength+SignalSignatureLength)
             {
+                offset=SignalPrefixLength+SignalSignatureLength;
                 using(var hmac=new HMACSHA256(auth))
                 {
-                    byte[] expected=hmac.ComputeHash(data,36,data.Length-36);int diff=0;
-                    for(int i=0;i<32;i++)diff|=expected[i]^data[4+i];if(diff!=0)return null;
+                    byte[] expected=hmac.ComputeHash(data,offset,data.Length-offset);int diff=0;
+                    for(int i=0;i<SignalSignatureLength;i++)diff|=expected[i]^data[SignalPrefixLength+i];if(diff!=0)return null;
                 }
-                offset=36;
             }
             else return null;
-            using(var stream=new MemoryStream(data,offset,data.Length-offset))
+            byte[] json=new byte[data.Length-offset];Buffer.BlockCopy(data,offset,json,0,json.Length);
+            using(var stream=new MemoryStream(json))
+            {
+                if(challenge)
+                {
+                    // OUC1 is the challenge discriminator; some servers omit the redundant op.
+                    // Deserialize only challenge fields, never unsigned membership state.
+                    var value=(RoomChallenge)new DataContractJsonSerializer(typeof(RoomChallenge)).ReadObject(stream);
+                    if(value==null || (value.Op!=null && value.Op!="challenge") || value.Cookie?.Length!=64)return null;
+                    try{Hex(value.Cookie,32);}catch(FormatException){return null;}
+                    return new RoomReply {Op="challenge",Cookie=value.Cookie};
+                }
                 return (RoomReply)new DataContractJsonSerializer(typeof(RoomReply)).ReadObject(stream);
+            }
         }
         public static byte[] Frame(byte[] id,byte[] key,ulong sequence,byte kind,byte[] payload)
         {

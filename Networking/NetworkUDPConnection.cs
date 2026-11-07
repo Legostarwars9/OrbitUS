@@ -29,6 +29,13 @@ namespace Orbit_Us
         private HashSet<int> activeRoster;
         private readonly HashSet<int> remotePlayers = new HashSet<int>();
         private readonly HashSet<int> departedPlayers = new HashSet<int>();
+        private readonly Dictionary<int,string> playerNames=new Dictionary<int,string>();
+        public string LocalUsername {get;set;}="";
+        public string GetPlayerName(int id)
+        {
+            string name=id==LocalPlayerId?PlayerNames.Normalize(LocalUsername):playerNames.TryGetValue(id,out string known)?known:"";
+            return name.Length>0?name:"Player "+id;
+        }
         private readonly Dictionary<int,PlayerTransformData> playerStates=new Dictionary<int,PlayerTransformData>();
         private readonly Dictionary<int,DateTime> stateTimes=new Dictionary<int,DateTime>();
         private readonly Dictionary<int,int> playerPings=new Dictionary<int,int>();
@@ -407,7 +414,7 @@ namespace Orbit_Us
             if (LocalPlayerId > 0 && (DateTime.UtcNow - lastHeartbeat).TotalSeconds >= 1)
             {
                 lastHeartbeat = DateTime.UtcNow;
-                _ = SendPacket(new NetworkPacket { Type = PacketType.KeepAlive, Data = new byte[0] });
+                _ = SendPacket(new NetworkPacket { Type = PacketType.KeepAlive, Data = System.Text.Encoding.UTF8.GetBytes(PlayerNames.Normalize(LocalUsername)) });
             }
             if (LocalPlayerId == -1 && (DateTime.UtcNow - lastConnectSent).TotalSeconds >= 1)
                 _ = SendPlayerConnect();
@@ -452,6 +459,12 @@ namespace Orbit_Us
                 if (packet.Type == PacketType.PlayerAssigned && packet.Data.Length == 4 && LocalPlayerId == -1)
                     LocalPlayerId = BitConverter.ToInt32(packet.Data, 0);
                 if (LocalPlayerId == -1) continue;
+                if(packet.Type==PacketType.PlayerName)
+                {
+                    if(PlayerNames.TryDecode(packet.Data,out int id,out string name) && !departedPlayers.Contains(id) &&
+                        (id==LocalPlayerId || remotePlayers.Contains(id)))playerNames[id]=name;
+                    continue;
+                }
                 if(packet.Type==PacketType.PlayerLatency)
                 {
                     if(packet.Data.Length%8!=0 || packet.Data.Length>512)continue;
@@ -520,6 +533,7 @@ namespace Orbit_Us
         {
             if (id == LocalPlayerId || !departedPlayers.Add(id)) return;
             remotePlayers.Remove(id);
+            playerNames.Remove(id);
             playerStates.Remove(id);stateTimes.Remove(id);playerPings.Remove(id);pingTimes.Remove(id);
             DeliverPacket(new NetworkPacket { Type = PacketType.PlayerDisconnected, Data = BitConverter.GetBytes(id) });
         }
@@ -537,6 +551,7 @@ namespace Orbit_Us
             connected = false;
             foreach (int id in new List<int>(remotePlayers)) NotifyPlayerLeft(id);
             remotePlayers.Clear();
+            playerNames.Clear();
             departedPlayers.Clear();
             rosterRevision = 0;
             activeRoster = null;

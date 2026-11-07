@@ -30,8 +30,9 @@ namespace Orbit_Us
         {
             if(!markers.TryGetValue(id,out Marker marker))return;
             marker.Positioned=true;
-            if(marker.Host!=host)
-            {marker.Host=host;marker.Text.text="Player "+id+(host?" (Host)":"");}
+            string name=(OrbitUs.Instance?.Connection?.GetPlayerName(id)??"Player "+id)+(host?" (Host)":"");
+            if(marker.Host!=host || marker.Text.text!=name)
+            {marker.Host=host;marker.Text.text=name;}
         }
         public void Remove(int id)=>markers.Remove(id);
         public void Clear(){markers.Clear();occupied.Clear();textStyle=null;}

@@ -81,6 +81,7 @@
         <Compile Include="PlanetSyncing\PlanetSnapshotCodec.cs" />
 
         <Compile Include="PlayerSyncing\PlayerReplicator.cs" />
+        <Compile Include="PlayerSyncing\PlayerNames.cs" />
         <Compile Include="PlayerSyncing\PlayerNameplates.cs" />
         <Compile Include="PlayerSyncing\SpectatorState.cs" />
         <Compile Include="PlayerSyncing\TeamWipeState.cs" />

@@ -465,7 +465,7 @@ namespace Orbit_Us
             return remotePlayers.TryGetValue(id,out GameObject model) && model!=null && model.activeInHierarchy?model.transform:null;
         }
         public Vector2 RemoteVelocity(int id)=>remoteVelocities.TryGetValue(id,out Vector2 velocity)?velocity:Vector2.zero;
-        public string PlayerLabel(int id)=>"Player "+id+(id==remoteHost?" (Host)":"");
+        public string PlayerLabel(int id)=>connection.GetPlayerName(id)+(id==remoteHost?" (Host)":"");
         public void LateUpdate()=>Life.LateUpdate();
         public void DrawSpectator()=>Life.Draw();
         public bool FinishWipeDelivery()

@@ -11,11 +11,10 @@ namespace Orbit_Us
     {
         private readonly OrbitUs mod;
         private string address,port,error="",matchmaking,joinCode="";
+        private string username;
         private bool rosterOpen,direct;
         private Vector2 rosterScroll,lobbyScroll,queueScroll;
         private GUIStyle title,muted,barText;
-        private playerController remapped;
-        private KeyCode replacement;
         private readonly Dictionary<int,float> pendingKicks=new Dictionary<int,float>();
         private readonly Dictionary<int,float> nextKick=new Dictionary<int,float>();
         private static readonly FieldInfo MainMenuField=AccessTools.Field(typeof(startManager),"mainMenuScreen");
@@ -24,7 +23,7 @@ namespace Orbit_Us
         public static bool PointerOverPanel {get;private set;}
 
         public MultiplayerMenu(OrbitUs mod,string address,int port)
-        {this.mod=mod;this.address=address;this.port=port.ToString();matchmaking=mod.MatchmakingEndpoint;}
+        {this.mod=mod;this.address=address;this.port=port.ToString();matchmaking=mod.MatchmakingEndpoint;username=mod.Username;}
 
         public bool MainMenuVisible
         {
@@ -42,11 +41,10 @@ namespace Orbit_Us
 
         public void Update()
         {
-            if(mod.GameplayConnected && Input.GetKeyDown(KeyCode.Tab))rosterOpen=!rosterOpen;
+            if(mod.GameplayConnected && Input.GetKeyDown(KeyCode.BackQuote))rosterOpen=!rosterOpen;
             if(!mod.GameplayConnected)rosterOpen=false;
             Vector2 mouse=new Vector2(Input.mousePosition.x,Screen.height-Input.mousePosition.y)/Scale;
             PointerOverPanel=MainMenuVisible?MenuRect.Contains(mouse):mod.GameplayConnected && rosterOpen && RosterRect.Contains(mouse);
-            UpdateBinding();
             foreach(int id in new List<int>(pendingKicks.Keys))
             {
                 if(!mod.SessionActive || !mod.SessionHost || !mod.Connection.GetRemotePlayerIds().Contains(id) || Time.unscaledTime>pendingKicks[id]+5)
@@ -56,22 +54,6 @@ namespace Orbit_Us
                 nextKick[id]=Time.unscaledTime+0.5f;
                 _=mod.Connection.KickPlayer(id);
             }
-        }
-        private void UpdateBinding()
-        {
-            if(!mod.GameplayConnected){RestoreBinding();return;}
-            var controller=player.Instance==null?null:player.Instance.GetComponent<playerController>();
-            if(controller==remapped || controller==null)return;
-            RestoreBinding();
-            if(controller.GetKey(playerController.Action.SwitchWeapon)!=KeyCode.Tab)return;
-            replacement=Array.IndexOf(controller.GetKeys(),KeyCode.Q)<0?KeyCode.Q:KeyCode.F8;
-            controller.SetKey(playerController.Action.SwitchWeapon,replacement);remapped=controller;
-        }
-        private void RestoreBinding()
-        {
-            if(remapped!=null && remapped.GetKey(playerController.Action.SwitchWeapon)==replacement)
-                remapped.SetKey(playerController.Action.SwitchWeapon,KeyCode.Tab);
-            remapped=null;
         }
         private void Styles()
         {
@@ -101,12 +83,13 @@ namespace Orbit_Us
             if(!mod.SessionActive && !mod.RoomRequested)
             {
                 GUILayout.Label("Multiplayer",muted);GUILayout.Space(8);
+                GUILayout.Label("Username");username=GUILayout.TextField(username,PlayerNames.MaxLength);
                 GUILayout.Label("Matchmaking server");matchmaking=GUILayout.TextField(matchmaking,253);
                 GUILayout.Label("Room code");joinCode=GUILayout.TextField(joinCode,11).ToUpperInvariant();
                 GUILayout.Space(8);
                 GUILayout.BeginHorizontal();
-                if(GUILayout.Button("Create room",GUILayout.Height(30))){error="";mod.BeginCodeRoom(matchmaking,"",true);}
-                if(GUILayout.Button("Join code",GUILayout.Height(30))){error="";mod.BeginCodeRoom(matchmaking,joinCode,false);}
+                if(GUILayout.Button("Create room",GUILayout.Height(30))){error="";mod.Username=username;mod.BeginCodeRoom(matchmaking,"",true);}
+                if(GUILayout.Button("Join code",GUILayout.Height(30))){error="";mod.Username=username;mod.BeginCodeRoom(matchmaking,joinCode,false);}
                 GUILayout.EndHorizontal();GUILayout.Space(10);
                 direct=GUILayout.Toggle(direct,"Direct IP / VPN");
                 if(direct)
@@ -116,14 +99,14 @@ namespace Orbit_Us
                     GUILayout.BeginHorizontal();
                     if(GUILayout.Button("Host directly"))
                     {
-                        if(int.TryParse(port,out int parsed) && parsed>0 && parsed<=65535){error="";mod.HostDirectLobby(parsed);}
+                        if(int.TryParse(port,out int parsed) && parsed>0 && parsed<=65535){error="";mod.Username=username;mod.HostDirectLobby(parsed);}
                         else error="Enter a valid UDP port.";
                     }
                     if(GUILayout.Button("Join IP"))
                     {
                         if(string.IsNullOrWhiteSpace(address) || address.Contains("[") || !int.TryParse(port,out int parsed) || parsed<1 || parsed>65535)
                             error="Enter the host address and a valid UDP port.";
-                        else{error="";mod.JoinLobby(address,parsed);}
+                        else{error="";mod.Username=username;mod.JoinLobby(address,parsed);}
                     }
                     GUILayout.EndHorizontal();
                 }
@@ -175,7 +158,7 @@ namespace Orbit_Us
             foreach(var peer in peers)
             {
                 if(peer.PlayerId>0 || peer.State=="Declined")continue;found=true;
-                GUILayout.BeginHorizontal();GUILayout.Label(peer.Id.Substring(0,6)+" • "+peer.State,muted);
+                GUILayout.BeginHorizontal();GUILayout.Label(peer.Name+" • "+peer.State,muted);
                 if(peer.Queued)
                 {
                     if(GUILayout.Button("Accept",GUILayout.Width(52)))mod.Room.Approve(peer.Id);
@@ -192,7 +175,7 @@ namespace Orbit_Us
             if(mod.Connection.LocalPlayerId>0)ids.Add(mod.Connection.LocalPlayerId);
             ids.Sort();return ids;
         }
-        private string Label(int id)=>"Player "+id+(id==mod.Connection.LocalPlayerId?" (You)":"")+
+        private string Label(int id)=>mod.Connection.GetPlayerName(id)+(id==mod.Connection.LocalPlayerId?" (You)":"")+
             (id==mod.Connection.HostPlayerId || (mod.SessionHost && id==mod.Connection.LocalPlayerId)?" • Host":"");
         private string Ping(int id)=>mod.Connection.GetPlayerPing(id)?.ToString()+ (mod.Connection.GetPlayerPing(id).HasValue?" ms":"—");
         private void Kick(int id)
@@ -234,7 +217,7 @@ namespace Orbit_Us
             {
                 GUILayout.BeginArea(new Rect(x,panel.yMax-35-queueHeight,panel.width-36,queueHeight));DrawQueue();GUILayout.EndArea();
             }
-            GUI.Label(new Rect(x,panel.yMax-35,panel.width-36,24),"Tab: close"+(remapped!=null?"   •   "+replacement+": switch weapon":"")+"   •   Ping to host relay",muted);
+            GUI.Label(new Rect(x,panel.yMax-35,panel.width-36,24),"` / ~: close   •   Ping to host relay",muted);
         }
         private void Meter(Rect rect,float value,float max,bool known,Color tint)
         {
@@ -245,7 +228,7 @@ namespace Orbit_Us
             }
             GUI.color=previous;GUI.Label(rect,known?Mathf.CeilToInt(value)+" / "+Mathf.CeilToInt(max):"—",barText);
         }
-        public void Dispose(){RestoreBinding();PointerOverPanel=false;pendingKicks.Clear();nextKick.Clear();}
+        public void Dispose(){PointerOverPanel=false;pendingKicks.Clear();nextKick.Clear();}
     }
 
     [HarmonyPatch(typeof(startManager),nameof(startManager.StartGameQuick))]

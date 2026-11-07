@@ -41,6 +41,7 @@ namespace Orbit_Us
             var sequences = new Dictionary<IPEndPoint, uint>();
             IPEndPoint hostEndpoint = null;
             var lastSeen = new Dictionary<IPEndPoint, DateTime>();
+            var usernames=new Dictionary<IPEndPoint,string>();
             // The codec caps each snapshot at 8 MiB; retain only three IDs.
             var enemySnapshots=new SortedDictionary<int,CachedPlanetSnapshot>();
             var lastEnemyRepair=new Dictionary<IPEndPoint,DateTime>();
@@ -74,6 +75,7 @@ namespace Orbit_Us
                             sequences.Remove(endpoint);
                             combatFrames.Remove(endpoint);
                             lastSeen.Remove(endpoint);
+                            usernames.Remove(endpoint);
                             lastPlanetRepair.Remove(endpoint);lastEnemyRepair.Remove(endpoint);
                             lastProgressRepair.Remove(endpoint);
                             probes.Remove(endpoint);pings.Remove(endpoint);pingTimes.Remove(endpoint);
@@ -102,6 +104,10 @@ namespace Orbit_Us
                         {
                             Type = PacketType.PlayerRoster, Data = roster
                         }), null);
+                        if(rosterRevision%5==0)
+                            foreach(var named in usernames)
+                                if(clients.TryGetValue(named.Key,out int namedId))
+                                    await Broadcast(socket,clients,PacketSerializer.Serialize(new NetworkPacket {Type=PacketType.PlayerName,Data=PlayerNames.Encode(namedId,named.Value)}),null);
                         // One server-clock round trip per second. No client clocks or reported ping values are trusted.
                         foreach(var endpoint in clients.Keys)
                         {
@@ -185,6 +191,12 @@ namespace Orbit_Us
                         if (!clients.ContainsKey(sender) && clients.Count >= 256) continue;
                         lastSeen[sender] = DateTime.UtcNow;
                         await HandlePlayerConnect(socket, clients, sender);
+                        foreach(var named in usernames)
+                            if(clients.TryGetValue(named.Key,out int namedId))
+                            {
+                                byte[] bytes=PacketSerializer.Serialize(new NetworkPacket {Type=PacketType.PlayerName,Data=PlayerNames.Encode(namedId,named.Value)});
+                                await socket.SendAsync(bytes,bytes.Length,sender);
+                            }
                         lock (lifecycle)
                             if (ReferenceEquals(socket, udpServer)) destinations = new List<IPEndPoint>(clients.Keys).ToArray();
                         continue;
@@ -210,6 +222,13 @@ namespace Orbit_Us
                     }
                     if(packet.Type==PacketType.KeepAlive)
                     {
+                        if(packet.Data.Length>PlayerNames.MaxBytes)continue;
+                        string name=PlayerNames.Normalize(System.Text.Encoding.UTF8.GetString(packet.Data));
+                        if(!usernames.TryGetValue(sender,out string previousName) || previousName!=name)
+                        {
+                            usernames[sender]=name;
+                            await Broadcast(socket,clients,PacketSerializer.Serialize(new NetworkPacket {Type=PacketType.PlayerName,Data=PlayerNames.Encode(clients[sender],name)}),null);
+                        }
                         byte[] reply=PacketSerializer.Serialize(new NetworkPacket {Type=PacketType.KeepAliveResponse,Data=new byte[0]});
                         await socket.SendAsync(reply,reply.Length,sender);continue;
                     }
@@ -227,6 +246,7 @@ namespace Orbit_Us
                         if(kicked.Count>=256)kicked.Remove(kickOrder.Dequeue());
                         kicked[victim]=DateTime.UtcNow;kickOrder.Enqueue(victim);
                         clients.Remove(victim);lastSeen.Remove(victim);sequences.Remove(victim);combatFrames.Remove(victim);
+                        usernames.Remove(victim);
                         lastPlanetRepair.Remove(victim);lastEnemyRepair.Remove(victim);lastProgressRepair.Remove(victim);
                         probes.Remove(victim);pings.Remove(victim);pingTimes.Remove(victim);
                         lock(lifecycle)if(ReferenceEquals(socket,udpServer))destinations=new List<IPEndPoint>(clients.Keys).ToArray();
@@ -239,6 +259,7 @@ namespace Orbit_Us
                     {
                         int departed = clients[sender];
                         clients.Remove(sender);
+                        usernames.Remove(sender);
                         lastSeen.Remove(sender);
                         lastPlanetRepair.Remove(sender);lastEnemyRepair.Remove(sender);
                         lastProgressRepair.Remove(sender);

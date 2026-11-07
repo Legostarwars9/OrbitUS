@@ -33,6 +33,12 @@ namespace Orbit_Us
         private Task<RoomTransport> roomTask;
         private ConfigEntry<string> matchmakingAddress,matchmakingAccess;
         private ConfigEntry<int> matchmakingPort;
+        private ConfigEntry<string> username;
+        public string Username
+        {
+            get=>username.Value;
+            set{username.Value=PlayerNames.Normalize(value);if(networkUDPConnection!=null)networkUDPConnection.LocalUsername=username.Value;}
+        }
         public RoomTransport Room=>room;
         public bool RoomRequested=>room!=null || roomTask!=null;
         public string MatchmakingEndpoint=>matchmakingAddress.Value+(matchmakingPort.Value==3478?"":":"+matchmakingPort.Value);
@@ -82,12 +88,14 @@ namespace Orbit_Us
 
             networkUDPConnection =
                 new NetworkUDPConnection();
+            networkUDPConnection.LocalUsername=Username;
 
             multiplayerMenu=new MultiplayerMenu(this,serverAddress.Value,udpPort.Value);
         }
 
         private void LoadConfig()
         {
+            username=Config.Bind("Player","Username","","Your multiplayer display name (up to 24 characters). Blank uses Player ID.");
             matchmakingAddress=Config.Bind("Matchmaking","ServerAddress","orbitstun.legostarwars9.com","IP address or DNS name of your running OrbitUS-P2P-Server, without a URL scheme or port. All players use the same server.");
             matchmakingPort=Config.Bind("Matchmaking","Port",12415,
                 new ConfigDescription("UDP port of OrbitUS-P2P-Server. This is separate from the game's direct-connection ports.",new AcceptableValueRange<int>(1,65535)));
@@ -313,6 +321,7 @@ namespace Orbit_Us
                 var completed=roomTask;roomTask=null;
                 if(completed.IsFaulted){NetworkStatus=completed.Exception.GetBaseException().Message;LeaveSession();return;}
                 room=completed.Result;
+                room.LocalUsername=Username;
             }
             if(room==null)return;
             try{room.Tick();}
