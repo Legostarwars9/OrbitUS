@@ -375,6 +375,7 @@ namespace Orbit_Us
                 else extraHealthById.TryGetValue(request.EnemyId,out h);
                 if(h!=null && !h.dead)
                 {
+                    ProgressReplicator.Instance?.RecordBossDamage(h,request.PlayerId);
                     var w=h as worm;
                     if(w!=null && !(w is wormShadow))
                     {
@@ -476,13 +477,17 @@ namespace Orbit_Us
             if (!isHost) return remoteIds.TryGetValue(obj, out int remote) ? remote : 0;
             var e = obj.GetComponent<enemy>();
             if(e!=null && hostEnemies.TryGetValue(e,out int id))return id;
-            var h=obj.GetComponent<health>();return h!=null && extraHealthIds.TryGetValue(h,out int extra)?extra:0;
+            var h=obj.GetComponent<health>();
+            if(h!=null && extraHealthIds.TryGetValue(h,out int extra))return extra;
+            return extraVisualPartIds.TryGetValue(obj,out int visual)?visual:0;
         }
         public GameObject ResolveObject(int id)
         {
             if (!isHost) return remoteEnemies.TryGetValue(id, out RemoteEnemy remote) ? remote.GameObject : null;
             if(hostEnemiesById.TryGetValue(id,out enemy e) && e!=null)return e.gameObject;
-            return extraHealthById.TryGetValue(id,out health h) && h!=null?h.gameObject:null;
+            if(extraHealthById.TryGetValue(id,out health h) && h!=null)return h.gameObject;
+            foreach(var part in extraVisualPartIds)if(part.Value==id && part.Key!=null)return part.Key;
+            return null;
         }
 
         public void Destroy()
@@ -492,7 +497,7 @@ namespace Orbit_Us
             foreach (int id in new List<int>(remoteEnemies.Keys)) RemoveRemoteEnemy(id);
             if (stagingRoot != null) UnityEngine.Object.Destroy(stagingRoot);
             hostEnemies.Clear();
-            hostEnemiesById.Clear();extraHealthIds.Clear();extraHealthById.Clear();remoteChildHealth.Clear();
+            hostEnemiesById.Clear();extraHealthIds.Clear();extraHealthById.Clear();extraVisualPartIds.Clear();remoteChildHealth.Clear();
             pendingDamage.Clear();
             damageHistory.Clear();
             if (Instance == this) Instance = null;

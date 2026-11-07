@@ -54,17 +54,7 @@ namespace Orbit_Us
 
         private Color GetPlayerColor(int playerId)
         {
-            System.Random random =
-                new System.Random(playerId * 5023);
-
-            float hue =
-                (float)random.NextDouble();
-
-            return Color.HSVToRGB(
-                hue,
-                0.75f,
-                1f
-            );
+            return PlayerNameplates.ColorFor(playerId);
         }
 
         private void CreateCanvas()
@@ -223,7 +213,7 @@ namespace Orbit_Us
         private void HandlePlayerTransform(
             NetworkPacket packet)
         {
-            if (packet.Data.Length < 16)
+            if (packet.Data==null || !PlayerTransformData.IsSupportedLength(packet.Data.Length))
                 return;
 
             PlayerTransformData transform =
@@ -237,6 +227,13 @@ namespace Orbit_Us
 
             if (transform.PlayerId == localPlayerId)
                 return;
+
+            if(transform.HasLifeState && !transform.Alive)
+            {
+                if(players.ContainsKey(transform.PlayerId))
+                {RemovePlayer(transform.PlayerId);RepositionPlayers();UpdateDistanceList();}
+                return;
+            }
 
             if (!players.ContainsKey(
                     transform.PlayerId))

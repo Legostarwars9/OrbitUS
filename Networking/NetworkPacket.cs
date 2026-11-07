@@ -25,7 +25,11 @@ namespace Orbit_Us
         CombatSnapshot,
         CombatHit,
         CombatHitAck,
-        EnemySnapshotRequest
+        EnemySnapshotRequest,
+        TaskTeleport,
+        TaskTeleportAck,
+        TeamWipe,
+        TeamWipeAck
     }
 
     public class NetworkPacket

@@ -28,11 +28,7 @@ namespace Orbit_Us
             {
                 if (packet.Type == PacketType.PlayerTransform)
                 {
-                    if (packet.Data.Length != 20) return;
-                    var transform = PlayerTransformData.Deserialize(packet.Data);
-                    if (transform.PlayerId <= 0 || float.IsNaN(transform.X) || float.IsInfinity(transform.X) ||
-                        float.IsNaN(transform.Y) || float.IsInfinity(transform.Y) ||
-                        float.IsNaN(transform.Rotation) || float.IsInfinity(transform.Rotation)) return;
+                    if (!PlayerTransformData.TryDeserialize(packet.Data,out PlayerTransformData transform) || transform.PlayerId<=0) return;
                     if (sequences.TryGetValue(transform.PlayerId, out uint previous))
                     {
                         if (unchecked((int)(transform.Sequence - previous)) <= 0) return;

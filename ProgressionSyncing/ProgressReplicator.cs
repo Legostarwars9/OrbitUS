@@ -15,6 +15,7 @@ namespace Orbit_Us
             public Vector2 Offset;
             public bool HasParent;
         }
+        private sealed class BossCredit {public int PlayerId;public float Received;}
         private readonly NetworkUDPConnection connection;
         private readonly bool isHost;
         private readonly Dictionary<dataBlob,int> ids = new Dictionary<dataBlob,int>();
@@ -25,6 +26,12 @@ namespace Orbit_Us
         private readonly Dictionary<int,ProgressAction> pending = new Dictionary<int,ProgressAction>();
         private readonly Dictionary<int,DamageRequestHistory> history = new Dictionary<int,DamageRequestHistory>();
         private readonly Dictionary<int,Vector2> positions = new Dictionary<int,Vector2>();
+        private readonly Dictionary<int,PlayerTransformData> motions=new Dictionary<int,PlayerTransformData>();
+        private readonly Dictionary<int,float> motionReceived=new Dictionary<int,float>();
+        private readonly Dictionary<health,BossCredit> bossCredits=new Dictionary<health,BossCredit>();
+        private readonly HashSet<health> completedBosses=new HashSet<health>();
+        private readonly UploadCompletionTracker uploadCompletion=new UploadCompletionTracker();
+        private int transmissionRequester;
         private readonly ProgressSnapshotCodec.Assembler snapshots = new ProgressSnapshotCodec.Assembler();
         private static readonly FieldInfo checklist = AccessTools.Field(typeof(storyManager), "missionChecklist");
         private static readonly FieldInfo targetType = AccessTools.Field(typeof(tracker), "targetType");
@@ -38,7 +45,7 @@ namespace Orbit_Us
         private int nextPiece = 1, nextRequest = 1, nextSnapshot = 1, ending;
         private readonly EndingPresentation endingPresentation=new EndingPresentation();
         public void NotifyEndingEffect(string name)=>endingPresentation.Notify(name);
-        private bool initialized, sending, applying, wasWarped, transmissionBusy, needsApply;
+        private bool initialized, sending, applying, wasWarped, needsApply;
         private float timer, retryTimer, scanTimer;
         private int lastReward;
         public static ProgressReplicator Instance { get; private set; }
@@ -65,6 +72,7 @@ namespace Orbit_Us
                     foreach(var d in Dialogues()) if(d!=null) d.StopAllCoroutines();
                 }
                 lastReward=0;
+                uploadCompletion.Clear();bossCredits.Clear();completedBosses.Clear();
             }
             singularity=UnityEngine.Object.FindObjectOfType<singularityManager>(true);
             warper=UnityEngine.Object.FindObjectOfType<devourerWarper>(true);
@@ -91,7 +99,8 @@ namespace Orbit_Us
             if(IsClient && needsApply && latest!=null) Apply(latest);
             if(isHost)
             {
-                if(transmissionBusy && story.researchReward!=lastReward) transmissionBusy=false;
+                int uploader=uploadCompletion.Complete(story.transmissionIndex,story.researchReward);
+                if(uploader>0)GatherAt(uploader,TaskTeleportReason.Upload);
                 if(player.hasFinalData && !story.fragmentHunting && warper!=null && !warper.warped)
                 {story.tracker.ChangeType(2);story.tracker.tooFarRange=1E12f;story.tracker.ChangeTarget(warper.transform);}
                 timer+=Time.unscaledDeltaTime;
@@ -152,7 +161,7 @@ namespace Orbit_Us
         }
         public void Collect(dataBlob blob)
         {
-            if(!initialized || blob==null || story==null || player==null || !blob.gameObject.activeInHierarchy) return;
+            if(!initialized || blob==null || story==null || player==null || player.dead || !blob.gameObject.activeInHierarchy) return;
             if(isHost) {CollectHost(EnsureId(blob),player.transform.position);return;}
             if(latest==null || (!blob.isFinal && latest.Data>=latest.DataMax) || (!blob.chasing && !latest.FragmentHunting)) return;
             foreach(var pair in pieces) if(pair.Value.Blob==blob) {Request(ProgressActionKind.Collect,pair.Key);return;}
@@ -176,7 +185,7 @@ namespace Orbit_Us
         }
         public void Request(ProgressActionKind kind,int arg=0)
         {
-            if(!initialized || story==null || player==null || applying) return;
+            if(!initialized || story==null || player==null || player.dead || applying) return;
             if(isHost) return;
             if(connection.LocalPlayerId<=0 || pending.Count>=64) return;
             foreach(var a in pending.Values) if(a.Kind==kind && a.Argument==arg) return;
@@ -187,9 +196,10 @@ namespace Orbit_Us
         public bool BeginTransmission()
         {
             if(IsClient) {Request(ProgressActionKind.Transmit);return false;}
-            if(story==null || player==null || transmissionBusy || player.data<player.dataMax || story.transmissionIndex>=7 || !story.PlayerIsSafe()) return false;
-            transmissionBusy=true;lastReward=story.researchReward;
-            return true;
+            if(transmissionRequester<=0 && player!=null && player.dead)return false;
+            if(story==null || player==null || uploadCompletion.Active || player.data<player.dataMax || story.transmissionIndex>=7 || !story.PlayerIsSafe()) return false;
+            int uploader=transmissionRequester>0?transmissionRequester:connection.LocalPlayerId;
+            return uploadCompletion.Begin(uploader,story.transmissionIndex,story.researchReward);
         }
         public void RecordEnding(int value) {if(isHost && ending==0) ending=value;}
         public bool EndingStarted => ending!=0;
@@ -202,15 +212,26 @@ namespace Orbit_Us
         private void Execute(ProgressAction action)
         {
             if(story==null || player==null || !Position(action.PlayerId,out Vector2 position)) return;
+            if(motions.TryGetValue(action.PlayerId,out PlayerTransformData actorState) && actorState.HasLifeState && !actorState.Alive)return;
             switch(action.Kind)
             {
                 case ProgressActionKind.Collect: CollectHost(action.Argument,position); break;
                 case ProgressActionKind.OpenComms:
-                    if(NearRadio(position) && story.transmissionIndex<7) story.OpenComms(); break;
+                    if(NearRadio(position) && story.transmissionIndex<7)
+                    {
+                        transmissionRequester=action.PlayerId;
+                        try{story.OpenComms();}finally{transmissionRequester=0;}
+                    }
+                    break;
                 case ProgressActionKind.CloseComms:
                     if(action.ExpectedTransmission==story.transmissionIndex && story.transmissionIndex<7 && story.currentTalking!=null && NearRadio(position)) story.CloseComms(); break;
                 case ProgressActionKind.Transmit:
-                    if(action.ExpectedTransmission==story.transmissionIndex && NearRadio(position)) story.StartTransmission(); break;
+                    if(action.ExpectedTransmission==story.transmissionIndex && NearRadio(position))
+                    {
+                        transmissionRequester=action.PlayerId;
+                        try{story.StartTransmission();}finally{transmissionRequester=0;}
+                    }
+                    break;
                 case ProgressActionKind.PlantBoss:
                     var planet=PlanetReplicator.Instance?.ResolveObject(action.Argument);
                     if(planet!=null && !bosses.plantSummoned && planet.GetComponent<livelyPlanet>()!=null && planet.GetComponent<livelyPlanet>().hasBoss &&
@@ -231,15 +252,24 @@ namespace Orbit_Us
                 if(Vector2.Distance(position,radio.transform.position)<Mathf.Abs(radio.transform.lossyScale.x)*2+100) return true;
             return false;
         }
+        public bool TryTransmissionSafety(out bool safe)
+        {
+            safe=false;if(!isHost || transmissionRequester<=0)return false;
+            if(!Position(transmissionRequester,out Vector2 position))return true;
+            foreach(var enemy in UnityEngine.Object.FindObjectsOfType<enemy>())
+                if(Vector2.Distance(enemy.transform.position,position)<100f)return true;
+            safe=true;return true;
+        }
         private void HandlePacket(NetworkPacket packet)
         {
             if(!initialized) return;
             if(isHost && packet.Type==PacketType.PlayerTransform)
             {
                 var t=PlayerTransformData.Deserialize(packet.Data);positions[t.PlayerId]=new Vector2(t.X,t.Y);
+                motions[t.PlayerId]=t;motionReceived[t.PlayerId]=Time.unscaledTime;
             }
             if(packet.Type==PacketType.PlayerDisconnected && packet.Data.Length==4)
-            {int id=BitConverter.ToInt32(packet.Data,0);positions.Remove(id);history.Remove(id);}
+            {int id=BitConverter.ToInt32(packet.Data,0);positions.Remove(id);motions.Remove(id);motionReceived.Remove(id);history.Remove(id);}
             if(isHost && packet.Type==PacketType.ProgressAction)
             {
                 var action=ProgressAction.Deserialize(packet.Data);
@@ -255,6 +285,72 @@ namespace Orbit_Us
                 if(story!=null && player!=null) Apply(state);
             }
         }
+        private bool TaskMotion(int id,out Vector2 position,out Vector2 velocity)
+        {
+            position=velocity=Vector2.zero;
+            if(id==connection.LocalPlayerId)
+            {
+                if(player==null || player.dead || !player.gameObject.activeInHierarchy || player.rb==null)return false;
+                position=player.transform.position;velocity=player.rb.velocity;return true;
+            }
+            if(!motions.TryGetValue(id,out PlayerTransformData motion) || !motion.HasVelocity ||
+                !motionReceived.TryGetValue(id,out float received) || Time.unscaledTime-received>3f ||
+                CombatReplicator.Instance?.Pilots.IsLiving(id)!=true)return false;
+            position=new Vector2(motion.X,motion.Y);velocity=new Vector2(motion.VX,motion.VY);return true;
+        }
+        private void GatherAt(int actor,TaskTeleportReason reason)
+        {
+            if(!isHost || !TaskDestination(actor,out Vector2 position,out Vector2 velocity))return;
+            PlayerReplicator.Instance?.GatherTeam(actor,position,velocity,reason);
+        }
+        private bool TaskDestination(int id,out Vector2 position,out Vector2 velocity)
+        {
+            if(TaskMotion(id,out position,out velocity))return true;
+            velocity=Vector2.zero;
+            if(id==connection.LocalPlayerId && PlayerReplicator.Instance?.Life.IsSpectating==true)
+            {position=PlayerReplicator.Instance.Life.DeathPosition;return true;}
+            if(motions.TryGetValue(id,out PlayerTransformData state) && state.HasLifeState && !state.Alive &&
+                motionReceived.TryGetValue(id,out float received) && Time.unscaledTime-received<=3f)
+            {position=new Vector2(state.X,state.Y);return true;}
+            return false;
+        }
+        private health CurrentBoss=>bosses!=null && bosses.bossHealth!=null?bosses.bossHealth.health:null;
+        public void RecordBossDamage(health target,int actor)
+        {
+            if(!initialized || !isHost || target==null || actor<=0)return;
+            var boss=CurrentBoss;if(boss==null || completedBosses.Contains(boss))return;
+            var part=target.GetComponent<wormPart>();
+            if(target!=boss && !target.transform.IsChildOf(boss.transform) && !(part!=null && part.worm==boss))return;
+            bossCredits[boss]=new BossCredit {PlayerId=actor,Received=Time.unscaledTime};
+        }
+        public void RecordLocalBossDamage(health target)=>RecordBossDamage(target,connection.LocalPlayerId);
+        public void BossDied(health target)
+        {
+            if(!initialized || !isHost || target==null || target!=CurrentBoss || !completedBosses.Add(target))return;
+            int actor=0;
+            if(bossCredits.TryGetValue(target,out BossCredit credit) && Time.unscaledTime-credit.Received<=1f && TaskDestination(credit.PlayerId,out _,out _))actor=credit.PlayerId;
+            if(actor==0)
+            {
+                // Environmental deaths gather at the nearest living pilot.
+                float nearest=float.PositiveInfinity;int bestId=int.MaxValue;
+                var candidates=new List<int>(motions.Keys);candidates.Add(connection.LocalPlayerId);
+                foreach(int id in candidates)
+                    if(TaskMotion(id,out Vector2 position,out _))
+                    {
+                        float distance=(position-(Vector2)target.transform.position).sqrMagnitude;
+                        if(CombatRules.Prefer(distance,id,nearest,bestId)){nearest=distance;bestId=id;actor=id;}
+                    }
+                if(actor==0)foreach(int id in candidates)
+                    if(TaskDestination(id,out Vector2 position,out _))
+                    {
+                        float distance=(position-(Vector2)target.transform.position).sqrMagnitude;
+                        if(CombatRules.Prefer(distance,id,nearest,bestId)){nearest=distance;bestId=id;actor=id;}
+                    }
+            }
+            bossCredits.Remove(target);
+            if(actor>0)GatherAt(actor,TaskTeleportReason.Boss);
+        }
+
         private string Prefab(dataBlob blob)
         {
             var sr=blob.GetComponent<SpriteRenderer>();
@@ -283,7 +379,7 @@ namespace Orbit_Us
                 Wave=w.wave,WaveDuration=w.waveDuration,SecondsUntilNext=w.secondsUntilNext,TargetType=(int)targetType.GetValue(track),TargetRange=track.tooFarRange,
                 TerminalActive=story.terminalBox.activeSelf,TransmitActive=story.transmitButton.activeSelf,DataBarActive=story.dataBar.activeSelf,TerminalText=story.terminalText.text,SloMo=story.timeManager.sloMo,
                 Warped=warper!=null && warper.warped,Ending=ending,HostX=player.transform.position.x,HostY=player.transform.position.y,
-                Song=story.musicManager.currentSong??"",BadEndingScreen=singularity!=null && singularity.badEndingScreen.activeSelf,FinalQuit=singularity!=null && singularity.finalQuitButton.activeSelf
+                BadEndingScreen=singularity!=null && singularity.badEndingScreen.activeSelf,FinalQuit=singularity!=null && singularity.finalQuitButton.activeSelf
             };
             if(warper!=null)
             {
@@ -363,8 +459,6 @@ namespace Orbit_Us
                     if(d is dialogueTimeless) ((dialogueTimeless)d).lowerTextBox.text=v.LowerText;
                 }
                 if(previousData<state.Data) audioManager.Instance?.Play("DataCollection");
-                if(state.Song!="" && story.musicManager.currentSong!=state.Song)
-                {story.musicManager.StopBackgroundMusic();story.musicManager.PlaySong(state.Song);}
                 if(state.Warped && state.SingularityEnabled && !wasWarped) {SetupWarp(state);wasWarped=true;}
                 if(!state.Warped) wasWarped=false;
                 if(state.Warped && warper!=null)
@@ -428,16 +522,16 @@ namespace Orbit_Us
             var boss=EnemyReplicator.Instance?.ResolveObject(state.BossId);
             if(bosses!=null && bosses.bossHealth!=null)
             {
-                var bar=bosses.bossHealth;bar.gameObject.SetActive(state.BossMaxHP>0 && state.BossHP>0);
+                var bar=bosses.bossHealth;
+                // Capture the authored full size while the UI is still inactive.
+                var presentation=BossHealthBarPresentation.Prepare(bar);
+                bar.gameObject.SetActive(state.BossMaxHP>0 && state.BossHP>0);
                 bar.health=boss!=null?boss.GetComponent<health>():null;
                 if(bar.gameObject.activeSelf)
                 {
                     bar.SetName(state.BossName);bar.healthText.text=state.BossHP.ToString("0");
-                    float fraction=Mathf.Clamp01(state.BossHP/Mathf.Max(1,state.BossMaxHP));
-                    bar.bar.localScale=new Vector2(bar.startingSize.x*fraction,bar.startingSize.y);
-                    bar.bar.anchoredPosition=new Vector2(-97.5f+97.5f*fraction,0);
+                    presentation.Draw(bar,state.BossHP,state.BossMaxHP);
                 }
-                if(boss!=null) story.musicManager.currentBoss=boss.transform;
             }
         }
         private void SetupWarp(ProgressState state)
@@ -464,6 +558,7 @@ namespace Orbit_Us
             if(IsClient)endingPresentation.Restore(warper);
             foreach(var p in pieces.Values) if(p.Blob!=null) {p.Blob.gameObject.SetActive(false);UnityEngine.Object.Destroy(p.Blob.gameObject);}
             pieces.Clear();pending.Clear();
+            motions.Clear();motionReceived.Clear();positions.Clear();uploadCompletion.Clear();bossCredits.Clear();completedBosses.Clear();
             if(staging!=null) UnityEngine.Object.Destroy(staging);
             if(IsClient && story!=null) {story.timeManager.sloMo=false;foreach(var d in Dialogues()) if(d!=null) d.StopYapping();}
             initialized=false;if(Instance==this) Instance=null;

@@ -28,8 +28,12 @@ namespace Orbit_Us
 
         private Sprite playerSprite;
         private Sprite arrowSprite;
+        private TeleportSound teleportSound;
 
         private bool udpConnected;
+        private bool teamGameOverApplied;
+        private bool freshReplayRequired,reloadingAfterWipe;
+        public static OrbitUs Instance {get;private set;}
 
         private float transformSendTimer;
 
@@ -45,6 +49,7 @@ namespace Orbit_Us
 
         private void Awake()
         {
+            Instance=this;
             Application.runInBackground = true;
             harmony = new Harmony("Orbit-Us.enemy-spawn-control");
             harmony.PatchAll();
@@ -60,6 +65,8 @@ namespace Orbit_Us
             LoadAssets();
             LoadImage();
             LoadArrowImage();
+            teleportSound=gameObject.AddComponent<TeleportSound>();
+            teleportSound.Initialize(Path.Combine(Path.GetDirectoryName(Info.Location),"Orbit_Us-Assets","teleport.wav"));
 
             networkManager =
                 new NetworkManager();
@@ -272,6 +279,8 @@ namespace Orbit_Us
 
         private void Update()
         {
+            // Let the wipe notification finish before starting another connection.
+            if(teamGameOverApplied && udpConnected){UpdatePlayerReplication();return;}
             if (Input.GetKeyDown(KeyCode.F6))
             {
                 RestartServers();
@@ -460,6 +469,7 @@ namespace Orbit_Us
                 return;
 
             networkUDPConnection.DispatchPendingPackets();
+            if(playerReplicator?.RunEnded==true){UpdateTeamGameOver();return;}
             if (!networkUDPConnection.IsConnected)
             {
                 playerReplicator?.Destroy();
@@ -484,6 +494,7 @@ namespace Orbit_Us
             {
                 playerReplicator.Update();
             }
+            if(playerReplicator?.RunEnded==true){UpdateTeamGameOver();return;}
             
 
             if (playerTracker != null)
@@ -499,7 +510,7 @@ namespace Orbit_Us
             }
 
             transformSendTimer +=
-                Time.deltaTime;
+                Time.unscaledDeltaTime;
 
             if (transformSendTimer <
                 TransformSendRate)
@@ -512,6 +523,58 @@ namespace Orbit_Us
             SendLocalPlayerTransform();
         }
 
+        private void UpdateTeamGameOver()
+        {
+            if(!teamGameOverApplied)
+            {
+                teamGameOverApplied=true;
+                freshReplayRequired=true;
+                MultiplayerActive=false;IsHost=false;
+                playerReplicator.Life.EndRun();
+                playerTracker?.Destroy();playerTracker=null;
+                combatReplicator?.Destroy();combatReplicator=null;
+                progressReplicator?.Destroy();progressReplicator=null;
+                enemyReplicator?.Destroy();enemyReplicator=null;
+                planetReplicator?.Destroy();planetReplicator=null;
+                foreach(var ending in UnityEngine.Object.FindObjectsOfType<singularityManager>(true))
+                {
+                    ending.StopAllCoroutines();ending.enabled=false;
+                    if(ending.badEndingScreen!=null)ending.badEndingScreen.SetActive(false);
+                    if(ending.finalQuitButton!=null)ending.finalQuitButton.SetActive(false);
+                    if(ending.endingDialogue!=null)ending.endingDialogue.gameObject.SetActive(false);
+                    if(ending.badEndingDialogue!=null)ending.badEndingDialogue.gameObject.SetActive(false);
+                }
+                foreach(var warp in UnityEngine.Object.FindObjectsOfType<devourerWarper>(true))
+                {
+                    warp.StopAllCoroutines();warp.warped=false;
+                    if(warp.blackHoleScreen!=null)warp.blackHoleScreen.SetActive(false);
+                    if(warp.blackHole!=null)warp.blackHole.playerInside=false;
+                }
+                var manager=gameManager.Instance;
+                if(manager!=null){manager.ResetEverything();manager.StopAllCoroutines();}
+                var clock=UnityEngine.Object.FindObjectOfType<timeManager>(true);
+                if(clock!=null){clock.isPaused=false;clock.sloMo=false;clock.playerTimeWarping=false;}
+                foreach(var menu in UnityEngine.Object.FindObjectsOfType<menuManager>(true))
+                    foreach(string name in new[]{"pauseMenu","settingsMenu"})
+                    {
+                        var panel=BuildFieldSnapshot.Field(typeof(menuManager),name).GetValue(menu) as GameObject;
+                        if(panel!=null)panel.SetActive(false);
+                    }
+                var local=player.Instance;
+                if(local!=null)
+                {
+                    if(local.mapProceeding!=null)local.mapProceeding.enabled=false;
+                    local.hp=0;local.dead=true;local.Die();
+                }
+            }
+            // Retain only the connection/acknowledgements until the end notice is delivered.
+            if(networkUDPConnection.IsConnected && !playerReplicator.FinishWipeDelivery())return;
+            playerReplicator.Destroy();playerReplicator=null;
+            networkUDPConnection.Disconnect();networkManager.Disconnect();
+            networkUDPServer.Stop();networkServer.Stop();
+            udpConnected=false;teamGameOverApplied=false;transformSendTimer=0;
+        }
+
         private async void SendLocalPlayerTransform()
         {
             try
@@ -519,32 +582,7 @@ namespace Orbit_Us
                 if (!udpConnected)
                     return;
 
-                playerController localPlayer =
-                    UnityEngine.Object.FindObjectOfType<
-                        playerController
-                    >();
-
-                if (localPlayer == null)
-                    return;
-
-                Transform playerTransform =
-                    localPlayer.transform;
-
-                float x =
-                    playerTransform.position.x;
-
-                float y =
-                    playerTransform.position.y;
-
-                float rotation =
-                    playerTransform.eulerAngles.z;
-
-                await networkUDPConnection
-                    .SendPlayerTransform(
-                        x,
-                        y,
-                        rotation
-                    );
+                if(playerReplicator!=null)await playerReplicator.PublishLocalState();
             }
             catch (Exception ex)
             {
@@ -554,13 +592,42 @@ namespace Orbit_Us
             }
         }
 
+        public bool ReplayAfterTeamWipe()
+        {
+            if(!freshReplayRequired)return false;
+            if(!reloadingAfterWipe){reloadingAfterWipe=true;StartCoroutine(FreshRunAfterWipe());}
+            return true;
+        }
+        private System.Collections.IEnumerator FreshRunAfterWipe()
+        {
+            while(udpConnected)yield return null;
+            var scene=UnityEngine.SceneManagement.SceneManager.GetActiveScene();
+            yield return UnityEngine.SceneManagement.SceneManager.LoadSceneAsync(scene.buildIndex);
+            yield return null;
+            freshReplayRequired=false;reloadingAfterWipe=false;
+            var start=UnityEngine.Object.FindObjectOfType<startManager>(true);
+            if(start!=null)start.StartGameQuick();
+        }
+
+        private void OnGUI()
+        {
+            if(!udpConnected || teamGameOverApplied)return;
+            playerReplicator?.DrawNameplates();
+            playerReplicator?.DrawRecallCountdown();
+            playerReplicator?.DrawSpectator();
+        }
+
         private void LateUpdate()
         {
+            if(teamGameOverApplied)return;
             if(udpConnected)combatReplicator?.LateUpdate();
+            if(udpConnected)playerReplicator?.LateUpdate();
         }
 
         private void OnDestroy()
         {
+            if(Instance==this)Instance=null;
+            if(teleportSound!=null)UnityEngine.Object.Destroy(teleportSound);
             combatReplicator?.Destroy();
             combatReplicator = null;
             progressReplicator?.Destroy();

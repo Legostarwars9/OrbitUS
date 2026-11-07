@@ -15,6 +15,7 @@ namespace Orbit_Us
             public Vector2 Position,Velocity;
             public float Received;
             public bool Alive;
+            public bool MotionLife;
         }
         private readonly Dictionary<int,Pilot> pilots=new Dictionary<int,Pilot>();
         private readonly Dictionary<Type,FieldInfo[]> fields=new Dictionary<Type,FieldInfo[]>();
@@ -25,12 +26,15 @@ namespace Orbit_Us
         {
             if(!host || t.PlayerId==connection.LocalPlayerId)return;
             var p=Get(t.PlayerId);
+            if(t.HasLifeState){p.Alive=t.Alive;p.MotionLife=true;}
             float elapsed=Time.unscaledTime-p.Received;
             p.Velocity=elapsed>0.005f && elapsed<1f?Vector2.ClampMagnitude((new Vector2(t.X,t.Y)-p.Position)/elapsed,500f):Vector2.zero;
             p.Position=new Vector2(t.X,t.Y);p.Received=Time.unscaledTime;
         }
         public void Presence(int id,bool alive)
-        {if(host && id!=connection.LocalPlayerId)Get(id).Alive=alive;}
+        {if(host && id!=connection.LocalPlayerId){var pilot=Get(id);if(!pilot.MotionLife)pilot.Alive=alive;}}
+        public bool IsLiving(int id)
+            =>pilots.TryGetValue(id,out Pilot p) && p.Alive && p.Object!=null && Time.unscaledTime-p.Received<3f;
         private Pilot Get(int id)
         {
             if(pilots.TryGetValue(id,out Pilot existing))
@@ -102,24 +106,45 @@ namespace Orbit_Us
     {
         public int PlayerId;
         private readonly HashSet<projectile> hits=new HashSet<projectile>();
+        private readonly HashSet<projectile> overlapping=new HashSet<projectile>();
+        private readonly List<Collider2D> contacts=new List<Collider2D>();
+        private Collider2D hitbox;
+        private static bool Hostile(projectile p)
+            =>p!=null && !p.playerSafe && p.GetComponent<CombatReplicaMarker>()==null;
+        private void Enter(projectile p)
+        {
+            if(p.dead)return;
+            CombatReplicator.Instance?.HitPilot(PlayerId,p.damage,p.projHeat*0.001f);
+            bool field=p is railBeam || p.fieldMultiplier!=1f || p.explosionRadius>0;
+            if(!field)p.ProjectileExplodeLight();
+        }
         private void OnTriggerEnter2D(Collider2D other)
         {
-            foreach(var old in new List<projectile>(hits))if(old==null)hits.Remove(old);
+            // Keep immediate contacts too, including shots that move through the
+            // entire hitbox within one physics step. The query shares this ledger.
             var p=other.GetComponent<projectile>();
-            if(p==null || p.playerSafe || p.GetComponent<CombatReplicaMarker>()!=null || !hits.Add(p))return;
-            CombatReplicator.Instance?.HitPilot(PlayerId,p.damage,p.projHeat*0.001f);
-            bool field=p is railBeam || p.fieldMultiplier!=1f || p.explosionRadius>0 || p.dead;
-            if(!field) p.ProjectileExplodeLight();
+            if(Hostile(p) && hits.Add(p))Enter(p);
         }
-        private void OnTriggerStay2D(Collider2D other)
+        private void FixedUpdate()
         {
-            var p=other.GetComponent<projectile>();
-            if(p==null || p.playerSafe || p.GetComponent<CombatReplicaMarker>()!=null)return;
-            if(p is railBeam || p.fieldMultiplier>0)
-                CombatReplicator.Instance?.HitPilot(PlayerId,p.damage*0.1f,p.projHeat*0.00001f);
+            if(hitbox==null)hitbox=GetComponent<Collider2D>();
+            if(hitbox==null || !hitbox.enabled)return;
+            // Query geometry directly: kinematic targets and teleported proxies
+            // must not depend on Unity delivering trigger enter/stay messages.
+            // Ignore the layer matrix here, but reject all visual/player shots.
+            hitbox.OverlapCollider(new ContactFilter2D {useTriggers=true},contacts);
+            overlapping.Clear();
+            foreach(var other in contacts)
+            {
+                var p=other.GetComponent<projectile>();
+                if(!Hostile(p) || !overlapping.Add(p))continue;
+                if(!hits.Contains(p))Enter(p);
+                else if(p is railBeam || p.fieldMultiplier>0)
+                    CombatReplicator.Instance?.HitPilot(PlayerId,p.damage*0.1f,p.projHeat*0.00001f);
+            }
+            hits.Clear();hits.UnionWith(overlapping);
         }
-        private void OnTriggerExit2D(Collider2D other)
-        {var p=other.GetComponent<projectile>();if(p!=null)hits.Remove(p);}
+        private void OnDisable(){hits.Clear();overlapping.Clear();contacts.Clear();}
     }
     public sealed class RemoteDefenseProxy:MonoBehaviour
     {

@@ -8,7 +8,7 @@ namespace Orbit_Us
     {
         public int Id;
         public string Prefab="";
-        public byte Kind; // 0 projectile, 1 fuel, 2 health
+        public byte Kind; // 0 projectile, 1 fuel, 2 health, 3 scrap (money)
         public float X,Y,VX,VY,Rotation,ScaleX=1,ScaleY=1,R=1,G=1,B=1,A=1,Amount=1;
         public bool PlayerSafe, Ended, Shield, Interceptor;
         public float CollisionRadius=0.5f;

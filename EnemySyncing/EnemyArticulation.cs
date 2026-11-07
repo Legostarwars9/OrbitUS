@@ -7,6 +7,7 @@ namespace Orbit_Us
     public partial class EnemyReplicator
     {
         private sealed class ChildHealth { public int Id;public float HP,MaxHP; }
+        private readonly Dictionary<GameObject,int> extraVisualPartIds=new Dictionary<GameObject,int>();
         private readonly Dictionary<health,int> extraHealthIds=new Dictionary<health,int>();
         private readonly Dictionary<int,health> extraHealthById=new Dictionary<int,health>();
         private readonly Dictionary<health,ChildHealth> remoteChildHealth=new Dictionary<health,ChildHealth>();
@@ -40,10 +41,17 @@ namespace Orbit_Us
             foreach(var obj in extras)
             {
                 var e=obj.GetComponent<enemy>();if(e!=null && roots.Contains(e))continue;
-                var h=obj.GetComponent<health>();if(h==null || h.dead)continue;
+                var h=obj.GetComponent<health>();if(h!=null && h.dead)continue;
                 int type=GetEnemyType(obj);if(type<0)continue;
-                list.Add(new EnemyTransformData {EnemyId=ExtraId(h),Type=type,X=obj.transform.position.x,Y=obj.transform.position.y,Rotation=obj.transform.eulerAngles.z,HP=h.hp,Nodes=CaptureArticulation(obj,type)});
+                // The actual plantFoot prefab has no health or enemy component.
+                // Its visual existence cannot be conditioned on having hit points.
+                int id;
+                if(h!=null)id=ExtraId(h);
+                else if(!extraVisualPartIds.TryGetValue(obj,out id))
+                {id=nextEnemyId++;extraVisualPartIds.Add(obj,id);}
+                list.Add(new EnemyTransformData {EnemyId=id,Type=type,X=obj.transform.position.x,Y=obj.transform.position.y,Rotation=obj.transform.eulerAngles.z,HP=h!=null?h.hp:0,Nodes=CaptureArticulation(obj,type)});
             }
+            foreach(var obj in new List<GameObject>(extraVisualPartIds.Keys))if(obj==null)extraVisualPartIds.Remove(obj);
             foreach(var h in new List<health>(extraHealthIds.Keys))if(h==null){extraHealthById.Remove(extraHealthIds[h]);extraHealthIds.Remove(h);}
         }
         private List<EnemyNodePose> CaptureArticulation(GameObject obj,int type)

@@ -22,6 +22,11 @@ It is for the game Orbitous on Steam: https://store.steampowered.com/app/3830300
    To start the multiplayer server set the ip address in the config file to be the ip address, domain, or tailscale domain/ip of the host. When in-game, press the quick play button and have the HOST press F6, then have all clients quick play and press F7<br><br>
 
 Currently, players, enemies, and planets are synced, progression and other qol gameplay features will be added eventually (to test out the progression syncing compile the mod from source) This will be changed in the future! <br><br>
+
+Individual multiplayer deaths use spectating and preserve your build for a task revive. If everyone dies, all players see the normal game-over screen and the run's upgrades, money and progress reset. Replay starts a fresh run; use F6/F7 to host and join multiplayer again.
+
+Out-of-range teleports play `Orbit_Us-Assets/teleport.wav` once when you arrive at the host. The sound also retries loading if the file was missing at startup.
+
 <b>Planned Features:<b> https://trello.com/b/NTNavEf7/orbitus-planned-features
 
 <br><h2><b> AI DISCLAIMER: MOST IF NOT ALL CODE IN THIS MOD IS AI-GENERATED </b></h3>

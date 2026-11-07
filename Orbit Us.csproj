@@ -43,6 +43,7 @@
     </ItemGroup>
     <ItemGroup>
         <Compile Include="OrbitUs.cs" />
+        <Compile Include="Audio\TeleportSound.cs" />
         <Compile Include="CombatSyncing\CombatState.cs" />
         <Compile Include="CombatSyncing\CombatSnapshotCodec.cs" />
         <Compile Include="CombatSyncing\CombatReplicator.cs" />
@@ -51,6 +52,7 @@
         <Compile Include="ProgressionSyncing\ProgressState.cs" />
         <Compile Include="ProgressionSyncing\ProgressSnapshotCodec.cs" />
         <Compile Include="ProgressionSyncing\ProgressReplicator.cs" />
+        <Compile Include="ProgressionSyncing\BossHealthBarPresentation.cs" />
         <Compile Include="ProgressionSyncing\EndingPresentation.cs" />
         <Compile Include="ProgressionSyncing\ProgressSyncPatches.cs" />
 
@@ -77,8 +79,16 @@
         <Compile Include="PlanetSyncing\PlanetSnapshotCodec.cs" />
 
         <Compile Include="PlayerSyncing\PlayerReplicator.cs" />
+        <Compile Include="PlayerSyncing\PlayerNameplates.cs" />
+        <Compile Include="PlayerSyncing\SpectatorState.cs" />
+        <Compile Include="PlayerSyncing\TeamWipeState.cs" />
+        <Compile Include="PlayerSyncing\PlayerBuildSnapshot.cs" />
+        <Compile Include="PlayerSyncing\PlayerLifeController.cs" />
+        <Compile Include="PlayerSyncing\PlayerLifePatches.cs" />
         <Compile Include="PlayerSyncing\PlayerTracker.cs" />
         <Compile Include="PlayerSyncing\PlayerTransformData.cs" />
+        <Compile Include="PlayerSyncing\HostRecallState.cs" />
+        <Compile Include="PlayerSyncing\TaskTeleportData.cs" />
 
         <Compile Include="Diagnostics\EnemyPrefabDump.cs" />
 
@@ -165,6 +175,18 @@
         </Reference>
         <Reference Include="UnityEngine.IMGUIModule">
             <HintPath>$(OrbitUsGameDir)/OrbitousLinux_Data/Managed/UnityEngine.IMGUIModule.dll</HintPath>
+        </Reference>
+        <Reference Include="UnityEngine.AudioModule">
+            <HintPath>$(OrbitUsGameDir)/OrbitousLinux_Data/Managed/UnityEngine.AudioModule.dll</HintPath>
+            <Private>False</Private>
+        </Reference>
+        <Reference Include="UnityEngine.UnityWebRequestModule">
+            <HintPath>$(OrbitUsGameDir)/OrbitousLinux_Data/Managed/UnityEngine.UnityWebRequestModule.dll</HintPath>
+            <Private>False</Private>
+        </Reference>
+        <Reference Include="UnityEngine.UnityWebRequestAudioModule">
+            <HintPath>$(OrbitUsGameDir)/OrbitousLinux_Data/Managed/UnityEngine.UnityWebRequestAudioModule.dll</HintPath>
+            <Private>False</Private>
         </Reference>
         <UnityReferences Include="$(OrbitUsGameDir)/OrbitousLinux_Data/Managed/UnityEngine*.dll" />
     </ItemGroup>

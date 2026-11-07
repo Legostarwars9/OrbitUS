@@ -45,7 +45,7 @@ namespace Orbit_Us
             foreach(var p in Resources.FindObjectsOfTypeAll<projectile>())
                 if(p!=null && !p.gameObject.scene.IsValid())prefabs[AssetKey(p)]=p.gameObject;
             foreach(var pickup in Resources.FindObjectsOfTypeAll<item>())
-                if(pickup!=null && !pickup.gameObject.scene.IsValid() && (pickup is fuelBlob || pickup is healthBlob))prefabs[AssetKey(pickup)]=pickup.gameObject;
+                if(pickup!=null && !pickup.gameObject.scene.IsValid() && (pickup is fuelBlob || pickup is healthBlob || pickup is scrap))prefabs[AssetKey(pickup)]=pickup.gameObject;
         }
         private static string AssetKey(Component c)=>c.GetType().Name+":"+c.gameObject.name.Replace("(Clone)","").Trim();
         private string ResolvePrefab(Component source)
@@ -84,7 +84,7 @@ namespace Orbit_Us
         }
         public void RegisterPickup(item pickup)
         {
-            if(!initialized || pickup==null || !(pickup is fuelBlob || pickup is healthBlob) || pickup.GetComponent<CombatPickupMarker>()!=null || drops.ContainsKey(pickup))return;
+            if(!initialized || pickup==null || !(pickup is fuelBlob || pickup is healthBlob || pickup is scrap) || pickup.GetComponent<CombatPickupMarker>()!=null || drops.ContainsKey(pickup))return;
             if(!host){UnityEngine.Object.Destroy(pickup.gameObject);return;}
             string key=ResolvePrefab(pickup);
             if(key==null){RefreshCatalog();key=ResolvePrefab(pickup);}
@@ -92,8 +92,8 @@ namespace Orbit_Us
             DisableDecay(pickup.gameObject);
             var marker=pickup.gameObject.AddComponent<CombatPickupMarker>();marker.Owner=connection.LocalPlayerId;marker.Id=nextId++;
             var state=CaptureBase(pickup.gameObject,marker.Id,key);
-            state.Kind=pickup is fuelBlob?(byte)1:(byte)2;
-            state.Amount=pickup is fuelBlob?((fuelBlob)pickup).size:((healthBlob)pickup).quantity;
+            state.Kind=pickup is fuelBlob?(byte)1:pickup is healthBlob?(byte)2:(byte)3;
+            state.Amount=pickup is fuelBlob?((fuelBlob)pickup).size:pickup is healthBlob?((healthBlob)pickup).quantity:((scrap)pickup).scraps;
             drops.Add(pickup,new Drop {Source=pickup,State=state,Expires=Time.unscaledTime+30f});
         }
         public void Claim(CombatPickupMarker marker)
@@ -227,7 +227,16 @@ namespace Orbit_Us
         private void Handle(NetworkPacket packet)
         {
             if(!initialized)return;
-            if(packet.Type==PacketType.PlayerTransform){Pilots.Motion(PlayerTransformData.Deserialize(packet.Data));return;}
+            if(packet.Type==PacketType.PlayerTransform)
+            {
+                var motion=PlayerTransformData.Deserialize(packet.Data);Pilots.Motion(motion);
+                if(host && motion.HasLifeState && !motion.Alive)
+                {
+                    hitTotals.Remove(motion.PlayerId);
+                    foreach(int id in new List<int>(pendingHits.Keys))if(pendingHits[id].PlayerId==motion.PlayerId)pendingHits.Remove(id);
+                }
+                return;
+            }
             if(packet.Type==PacketType.PlayerDisconnected && packet.Data.Length==4)
             {
                 int id=BitConverter.ToInt32(packet.Data,0);Pilots.Remove(id);incoming.Remove(id);ownerSeen.Remove(id);
@@ -249,7 +258,7 @@ namespace Orbit_Us
                 if(receivedHits.Accept(hit.Id))
                 {
                     var local=player.Instance;
-                    if(local!=null && !local.dead)
+                    if(local!=null && !local.dead && PlayerReplicator.Instance?.Life.IgnoreDamage!=true)
                     {local.HandleDamageImpulse(hit.Damage);if(local.temperature!=null)local.temperature.heat+=hit.Heat;}
                 }
                 _=connection.SendCombatHitAck(hit.Id);return;
@@ -260,7 +269,7 @@ namespace Orbit_Us
             if(!incoming.TryGetValue(owner,out CombatSnapshotCodec.Assembler assembler))
             {assembler=new CombatSnapshotCodec.Assembler();incoming.Add(owner,assembler);}
             if(assembler.TryAdd(packet.Data,out CombatFrame frame))
-            {Pilots.Presence(owner,frame.Alive);ownerSeen[owner]=Time.unscaledTime;Apply(frame);}
+            {Pilots.Presence(owner,frame.Alive);PlayerReplicator.Instance?.ObserveCombatLife(owner,frame.Alive);ownerSeen[owner]=Time.unscaledTime;Apply(frame);}
         }
         private void Apply(CombatFrame frame)
         {
@@ -293,6 +302,7 @@ namespace Orbit_Us
                         var pickup=obj.GetComponent<item>();pickup.rb=obj.GetComponent<Rigidbody2D>();
                         if(state.Kind==1 && pickup is fuelBlob)((fuelBlob)pickup).size=state.Amount;
                         if(state.Kind==2 && pickup is healthBlob)((healthBlob)pickup).quantity=state.Amount;
+                        if(state.Kind==3 && pickup is scrap)((scrap)pickup).scraps=(int)state.Amount;
                     }
                     replica=new Replica {Object=obj,State=state};replicas[key]=replica;
                     obj.transform.position=new Vector3(state.X,state.Y,0);obj.transform.rotation=Quaternion.Euler(0,0,state.Rotation);

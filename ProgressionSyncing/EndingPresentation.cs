@@ -40,6 +40,8 @@ namespace Orbit_Us
             if(exotic)phase=System.Math.Max(phase,count==0?5:4);
             fx.Phase=phase;fx.AmplitudeSteps=amplitude;fx.FrequencySteps=frequency;fx.ParticleCount=System.Math.Min(count,1000);
             fx.Spawning=s.spawning;fx.Exotics=exotic;fx.Controls=playerController.Instance!=null && playerController.Instance.enabled;
+            if(PlayerLifeController.Spectating && ProgressReplicator.Instance?.EndingStarted!=true)
+                fx.Controls=PlayerReplicator.Instance.Life.ControlsBeforeDeath;
             fx.RelativisticCamera=w.relCamEf!=null && w.relCamEf.enabled;
             fx.CameraAtBlackHole=w.cameraMove.leader==w.blackHole.transform;fx.BlackHoleActive=w.blackHole.gameObject.activeSelf;
             if(w.bloom!=null){fx.BloomIntensity=w.bloom.intensity.value;fx.BloomThreshold=w.bloom.threshold.value;}
@@ -67,9 +69,12 @@ namespace Orbit_Us
                 var t=w.centralDarknesses[i];if(t==null)continue;var d=fx.Darkness[i];
                 t.localScale=new Vector3(d.X,d.Y,d.Z);t.gameObject.SetActive(d.Active);
             }
-            if(playerController.Instance!=null)playerController.Instance.enabled=fx.Controls;
-            if(fx.CameraAtBlackHole)w.cameraMove.leader=w.blackHole.transform;
-            else if(player.Instance!=null)w.cameraMove.leader=player.Instance.transform;
+            if(!PlayerLifeController.Spectating)
+            {
+                if(playerController.Instance!=null)playerController.Instance.enabled=fx.Controls;
+                if(fx.CameraAtBlackHole)w.cameraMove.leader=w.blackHole.transform;
+                else if(player.Instance!=null)w.cameraMove.leader=player.Instance.transform;
+            }
             s.spawning=fx.Spawning && fx.Phase<5;
             if(fx.Phase>0 && fx.Phase<5)
             {

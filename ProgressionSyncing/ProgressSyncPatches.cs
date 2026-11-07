@@ -5,6 +5,47 @@ using UnityEngine;
 
 namespace Orbit_Us
 {
+    [HarmonyPatch(typeof(storyManager),"PlayerIsSafe")]
+    public static class RemoteUploadSafetyPatch
+    {
+        public static bool Prefix(ref bool __result)
+        {
+            var sync=ProgressReplicator.Instance;
+            if(sync==null || !sync.TryTransmissionSafety(out bool safe))return true;
+            __result=safe;return false;
+        }
+    }
+    [HarmonyPatch]
+    public static class TaskBossDamageCreditPatch
+    {
+        public static IEnumerable<MethodBase> TargetMethods()
+        {
+            foreach(var type in typeof(health).Assembly.GetTypes())
+                if(typeof(health).IsAssignableFrom(type))
+                    foreach(var method in AccessTools.GetDeclaredMethods(type))
+                        if((method.Name=="HandleDamageImpulse" || method.Name=="HandleDamageContinuous") &&
+                            method.GetParameters().Length==1 && method.GetParameters()[0].ParameterType==typeof(projectile))yield return method;
+        }
+        public static void Prefix(health __instance,projectile __0)
+        {
+            if(OrbitUs.IsHost && __0!=null && __0.playerSafe && __0.damage>0)
+                ProgressReplicator.Instance?.RecordLocalBossDamage(__instance);
+        }
+    }
+    [HarmonyPatch]
+    public static class TaskBossDeathPatch
+    {
+        public static IEnumerable<MethodBase> TargetMethods()
+        {
+            foreach(var type in typeof(health).Assembly.GetTypes())
+                if(typeof(health).IsAssignableFrom(type))
+                {
+                    var method=AccessTools.DeclaredMethod(type,"Die");
+                    if(method!=null && method.GetParameters().Length==0)yield return method;
+                }
+        }
+        public static void Prefix(health __instance)=>ProgressReplicator.Instance?.BossDied(__instance);
+    }
     [HarmonyPatch(typeof(player), "PotentiallyCollectData")]
     public static class SharedDataCollectionPatch
     {

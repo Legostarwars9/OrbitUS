@@ -6,7 +6,7 @@ namespace Orbit_Us
 {
     public static class CombatSnapshotCodec
     {
-        private const int Version=1, HeaderBytes=24, ChunkBytes=1076;
+        private const int Version=2, HeaderBytes=24, ChunkBytes=1076;
         public const int MaxSnapshotBytes=1024*1024;
         public static List<byte[]> Encode(CombatFrame state, int snapshotId)
         {
@@ -69,11 +69,13 @@ namespace Orbit_Us
             var ids=new HashSet<int>();
             foreach(var e in f.Entities)
             {
-                if(e.Id<=0 || !ids.Add(e.Id) || e.Kind>2 || e.Prefab==null || e.Prefab.Length>256 || e.LinePoints.Count>192 || e.LinePoints.Count%3!=0)throw new InvalidDataException("Invalid combat entity.");
+                if(e.Id<=0 || !ids.Add(e.Id) || e.Kind>3 || e.Prefab==null || e.Prefab.Length>256 || e.LinePoints.Count>192 || e.LinePoints.Count%3!=0)throw new InvalidDataException("Invalid combat entity.");
                 foreach(float v in new[]{e.X,e.Y,e.VX,e.VY,e.Rotation,e.ScaleX,e.ScaleY,e.R,e.G,e.B,e.A,e.Amount,e.CollisionRadius})
                     if(!CombatRules.Finite(v))throw new InvalidDataException("Nonfinite combat state.");
                 foreach(float v in e.LinePoints)if(!CombatRules.Finite(v))throw new InvalidDataException();
                 if(e.Amount<0)throw new InvalidDataException("Invalid pellet amount.");
+                // Float amounts must represent a whole, safely convertible scrap count.
+                if(e.Kind==3 && (e.Amount>=2147483648f || e.Amount!=Math.Truncate(e.Amount)))throw new InvalidDataException("Invalid scrap amount.");
             }
         }
         private static void WriteFrame(BinaryWriter w,CombatFrame f)

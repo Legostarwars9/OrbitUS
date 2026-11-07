@@ -174,11 +174,7 @@ namespace Orbit_Us
                     if (packet.Type ==
                         PacketType.PlayerTransform)
                     {
-                        if (packet.Data.Length != 20) continue;
-                        PlayerTransformData transform =
-                            PlayerTransformData.Deserialize(
-                                packet.Data
-                            );
+                        if (!PlayerTransformData.TryDeserialize(packet.Data,out PlayerTransformData transform)) continue;
 
                         if (sequences.TryGetValue(sender, out uint previous) &&
                             unchecked((int)(transform.Sequence - previous)) <= 0) continue;
@@ -187,6 +183,8 @@ namespace Orbit_Us
 
                         transform.PlayerId =
                             playerId;
+                        // Host identity comes from relay registration, never a client claim.
+                        transform.IsHost=hostEndpoint!=null && hostEndpoint.Equals(sender);
 
                         NetworkPacket outgoingPacket =
                             new NetworkPacket
@@ -372,6 +370,29 @@ namespace Orbit_Us
                         byte[] ack=new byte[8];Buffer.BlockCopy(BitConverter.GetBytes(clients[sender]),0,ack,0,4);
                         Buffer.BlockCopy(packet.Data,0,ack,4,4);
                         byte[] bytes=PacketSerializer.Serialize(new NetworkPacket {Type=PacketType.CombatHitAck,Data=ack});
+                        await socket.SendAsync(bytes,bytes.Length,hostEndpoint);continue;
+                    }
+
+                    if(packet.Type==PacketType.TeamWipe && hostEndpoint!=null && hostEndpoint.Equals(sender) && packet.Data.Length==4 && BitConverter.ToInt32(packet.Data,0)==1)
+                    {await Broadcast(socket,clients,result.Buffer,sender);continue;}
+                    if(packet.Type==PacketType.TeamWipeAck && hostEndpoint!=null && !hostEndpoint.Equals(sender) && packet.Data.Length==4 && BitConverter.ToInt32(packet.Data,0)==1)
+                    {
+                        byte[] bytes=PacketSerializer.Serialize(new NetworkPacket {Type=PacketType.TeamWipeAck,Data=BitConverter.GetBytes(clients[sender])});
+                        await socket.SendAsync(bytes,bytes.Length,hostEndpoint);continue;
+                    }
+
+                    if(packet.Type==PacketType.TaskTeleport && hostEndpoint!=null && hostEndpoint.Equals(sender))
+                    {
+                        var command=TaskTeleportData.Deserialize(packet.Data);
+                        foreach(var client in clients)if(client.Value==command.RecipientId)
+                        {await socket.SendAsync(result.Buffer,result.Buffer.Length,client.Key);break;}
+                        continue;
+                    }
+                    if(packet.Type==PacketType.TaskTeleportAck && hostEndpoint!=null && !hostEndpoint.Equals(sender) && packet.Data.Length==4)
+                    {
+                        byte[] ack=new byte[8];Buffer.BlockCopy(BitConverter.GetBytes(clients[sender]),0,ack,0,4);
+                        Buffer.BlockCopy(packet.Data,0,ack,4,4);
+                        byte[] bytes=PacketSerializer.Serialize(new NetworkPacket {Type=PacketType.TaskTeleportAck,Data=ack});
                         await socket.SendAsync(bytes,bytes.Length,hostEndpoint);continue;
                     }
 

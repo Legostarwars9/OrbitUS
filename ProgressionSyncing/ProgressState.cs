@@ -49,6 +49,7 @@ namespace Orbit_Us
         public bool TerminalActive, TransmitActive, DataBarActive, SloMo, Warped, BadEndingScreen, FinalQuit;
         public bool HoleScreen, Bars, Compass, Parallax, InGameStuff, SingularityEnabled;
         public float CameraSize=24, CameraMaxZoom=40, LightIntensity=1, DarknessAlpha, FlowX, FlowY, FlowSpeed, StayForce, BackgroundR, BackgroundG, BackgroundB;
+        // Song is retained in the wire format for compatibility; music stays local.
         public string TerminalText = "", Song = "", BossName = "";
         public EndingEffectsState Effects=new EndingEffectsState();
         public List<StoryDialogueState> Dialogues = new List<StoryDialogueState>();

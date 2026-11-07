@@ -46,7 +46,7 @@ namespace Orbit_Us
     public static class ResourceDropCollectionPatch
     {
         public static void Prefix(Collider2D __0)
-        {if(__0!=null)CombatReplicator.Instance?.Claim(__0.GetComponent<CombatPickupMarker>());}
+        {if(__0!=null && !PlayerLifeController.Spectating)CombatReplicator.Instance?.Claim(__0.GetComponent<CombatPickupMarker>());}
     }
     [HarmonyPatch]
     public static class NearestPilotTargetPatch
@@ -99,6 +99,7 @@ namespace Orbit_Us
             var nearest=CombatReplicator.Instance.Pilots.Nearest(__instance.transform.position);
             if(nearest==null)
             {
+                if(PlayerLifeController.Spectating)return false;
                 // The native defeat branch still needs a valid transform before
                 // it checks playerScript.dead and starts the shared bad ending.
                 __instance.target=player.Instance.transform;return true;

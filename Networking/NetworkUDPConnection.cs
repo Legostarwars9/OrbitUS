@@ -38,6 +38,14 @@ namespace Orbit_Us
         public int LocalPlayerId { get; private set; } = -1;
 
         public event Action<NetworkPacket> OnPacketReceived;
+        public List<int> GetRemotePlayerIds()=>new List<int>(remotePlayers);
+        public Task SendTaskTeleport(TaskTeleportData command)
+            =>HostConnection?SendPacket(new NetworkPacket {Type=PacketType.TaskTeleport,Data=command.Serialize()}):Task.CompletedTask;
+        public Task SendTaskTeleportAck(int sequence)
+            =>SendPacket(new NetworkPacket {Type=PacketType.TaskTeleportAck,Data=BitConverter.GetBytes(sequence)});
+        public Task SendTeamWipe()
+            =>HostConnection?SendPacket(new NetworkPacket {Type=PacketType.TeamWipe,Data=BitConverter.GetBytes(1)}):Task.CompletedTask;
+        public Task SendTeamWipeAck()=>SendPacket(new NetworkPacket {Type=PacketType.TeamWipeAck,Data=BitConverter.GetBytes(1)});
 
         public void Connect(
             string address,
@@ -321,18 +329,23 @@ namespace Orbit_Us
             catch (Exception ex) { Console.WriteLine($"UDP send failed: {ex.Message}"); }
         }
 
-        public async Task SendPlayerTransform(float x, float y, float rotation)
+        public Task SendPlayerTransform(float x, float y, float rotation)
+            =>SendMovement(new PlayerTransformData {X=x,Y=y,Rotation=rotation});
+
+        public Task SendPlayerMotion(float x,float y,float rotation,float vx,float vy)
+            =>SendMovement(new PlayerTransformData {X=x,Y=y,Rotation=rotation,VX=vx,VY=vy,HasVelocity=true});
+        public Task SendPlayerState(float x,float y,float rotation,float vx,float vy,bool alive)
+            =>SendMovement(new PlayerTransformData {X=x,Y=y,Rotation=rotation,VX=vx,VY=vy,HasVelocity=true,HasLifeState=true,Alive=alive});
+
+        private async Task SendMovement(PlayerTransformData transform)
         {
             UdpClient socket = udpClient;
             if (!connected || socket == null || LocalPlayerId == -1 ||
                 Interlocked.CompareExchange(ref sendingTransform, 1, 0) != 0) return;
             try
             {
-                var transform = new PlayerTransformData
-                {
-                    PlayerId = LocalPlayerId, Sequence = ++transformSequence,
-                    X = x, Y = y, Rotation = rotation
-                };
+                transform.PlayerId=LocalPlayerId;transform.Sequence=++transformSequence;
+                transform.IsHost=HostConnection;
                 byte[] data = PacketSerializer.Serialize(new NetworkPacket
                 {
                     Type = PacketType.PlayerTransform, Data = transform.Serialize()
@@ -444,7 +457,7 @@ namespace Orbit_Us
                     continue;
                 }
                 if ((packet.Type == PacketType.PlayerConnected && packet.Data.Length == 4) ||
-                    (packet.Type == PacketType.PlayerTransform && packet.Data.Length == 20))
+                    (packet.Type == PacketType.PlayerTransform && PlayerTransformData.IsSupportedLength(packet.Data.Length)))
                 {
                     int id = BitConverter.ToInt32(packet.Data, 0);
                     if (departedPlayers.Contains(id) || (activeRoster != null && !activeRoster.Contains(id))) continue;
