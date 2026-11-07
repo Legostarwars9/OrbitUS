@@ -23,8 +23,6 @@ It is for the game Orbitous on Steam: https://store.steampowered.com/app/3830300
 
 Currently, players, enemies, and planets are synced, progression and other qol gameplay features will be added eventually (to test out the progression syncing compile the mod from source) This will be changed in the future! <br><br>
 
-Out-of-range teleports play `Orbit_Us-Assets/teleport.wav` once when you arrive at the host. The sound also retries loading if the file was missing at startup.
-
 <b>Planned Features:<b> https://trello.com/b/NTNavEf7/orbitus-planned-features
 
 <br><h2><b> AI DISCLAIMER: MOST IF NOT ALL CODE IN THIS MOD IS AI-GENERATED </b></h3>
