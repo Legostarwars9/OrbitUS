@@ -32,11 +32,14 @@ namespace Orbit_Us
     public sealed class BossHealthBarPresentation : MonoBehaviour
     {
         private readonly BossHealthFillLayout layout = new BossHealthFillLayout();
+        private bossHealthBar target;
+        public GameObject ProgressDataBar;
 
         public static BossHealthBarPresentation Prepare(bossHealthBar ui)
         {
             var view = ui.GetComponent<BossHealthBarPresentation>();
             if (view == null) view = ui.gameObject.AddComponent<BossHealthBarPresentation>();
+            view.target=ui;
             Vector3 scale = ui.bar.localScale;
             // A bar already initialized in single player has a reliable full size.
             float width = ui.startingSize.x != 0f ? ui.startingSize.x : scale.x;
@@ -44,6 +47,17 @@ namespace Orbit_Us
             view.layout.Initialize(width, height, scale.z);
             ui.startingSize = new Vector2(view.layout.Width, view.layout.Height);
             return view;
+        }
+
+        private void LateUpdate()
+        {
+            if(!OrbitUs.MultiplayerActive || target==null || !target.gameObject.activeInHierarchy)return;
+            // All bosses share this HUD. Client bossHealthBar.Update is suppressed,
+            // so preserve its data-display exclusion even after other HUD updates.
+            if(target.dataBar!=null)target.dataBar.SetActive(false);
+            if(ProgressDataBar!=null)ProgressDataBar.SetActive(false);
+            if(target.dataBar!=null && transform.parent==target.dataBar.transform.parent &&
+                transform.GetSiblingIndex()<target.dataBar.transform.GetSiblingIndex())transform.SetAsLastSibling();
         }
 
         public void Draw(bossHealthBar ui, float hp, float maximum)

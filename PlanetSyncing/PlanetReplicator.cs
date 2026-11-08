@@ -25,11 +25,17 @@ namespace Orbit_Us
         private readonly bool isHost;
         private readonly Dictionary<int, GameObject> prefabs = new Dictionary<int, GameObject>();
         private readonly Dictionary<gravity, int> hostIds = new Dictionary<gravity, int>();
+        private readonly Dictionary<int,Rigidbody2D> hostMotionBodies=new Dictionary<int,Rigidbody2D>();
+        private readonly WorldMotionSender motionSender=new WorldMotionSender();
+        private readonly WorldMotionStream motionStream=new WorldMotionStream();
+        private float motionTimer,nextSpriteScan;
+        private uint motionSequence;
         private readonly Dictionary<int, Replica> replicas = new Dictionary<int, Replica>();
         private readonly Dictionary<string, Sprite> sprites = new Dictionary<string, Sprite>(StringComparer.Ordinal);
         private readonly Dictionary<MapProceeding, bool> stoppedMaps = new Dictionary<MapProceeding, bool>();
         private readonly HashSet<string> warnings = new HashSet<string>();
         private readonly PlanetSnapshotCodec.Assembler assembler = new PlanetSnapshotCodec.Assembler();
+        private readonly SupernovaWarningState supernovaWarnings=new SupernovaWarningState();
         private GameObject staging;
         private PlanetState originalCenter;
         private GameObject originalCenterObject;
@@ -91,7 +97,7 @@ namespace Orbit_Us
 
         private void RefreshCatalog()
         {
-            source = UnityEngine.Object.FindObjectOfType<spawner>();
+            if(source==null)source=UnityEngine.Object.FindObjectOfType<spawner>();
             if (source == null) return;
             if (originalCenterObject == null && originalCenter != null)
             {
@@ -108,9 +114,13 @@ namespace Orbit_Us
             prefabs[6] = source.materiaphagePlanet;
             prefabs[7] = source.radarPlanet;
             for (int i = 0; i < source.shopPlanetPool.Count; i++) prefabs[100 + i] = source.shopPlanetPool[i];
+            if(!isHost && Time.unscaledTime>=nextSpriteScan)
+            {
+            nextSpriteScan=Time.unscaledTime+5;
             foreach (Sprite sprite in Resources.FindObjectsOfTypeAll<Sprite>())
                 if (sprite != null && (!sprites.TryGetValue(sprite.name, out Sprite known) || known == null))
                     sprites[sprite.name] = sprite;
+            }
             foreach (var key in new List<GameObject>(origins.Keys))
                 if (key == null) { origins.Remove(key); stablePaths.Remove(key); }
             foreach (var key in new List<GameObject>(stablePaths.Keys))
@@ -179,6 +189,8 @@ namespace Orbit_Us
             }
             if (isHost)
             {
+                motionTimer+=Time.unscaledDeltaTime;
+                if(motionTimer>=.05f){motionTimer%=.05f;SendMotion();}
                 timer += Time.unscaledDeltaTime;
                 if (timer >= interval && !sending && source != null && connection.LocalPlayerId > 0)
                 {
@@ -188,6 +200,7 @@ namespace Orbit_Us
             }
             else
             {
+                double now=NetworkTime.Now;
                 foreach (var replica in replicas.Values)
                 {
                     if (replica.Object == null || replica.Body == null || replica.State == null) continue;
@@ -195,13 +208,25 @@ namespace Orbit_Us
                     float elapsed = Mathf.Max(0f, Time.time - replica.ReceivedAt);
                     float age = Mathf.Min(elapsed, MaxPredictionSeconds);
                     Vector2 position = new Vector2(state.X + state.VelocityX * age, state.Y + state.VelocityY * age);
-                    replica.Body.position = Vector2.Lerp(replica.Body.position, position, Mathf.Min(1f, Time.deltaTime * 12f));
-                    replica.Body.rotation = Mathf.LerpAngle(replica.Body.rotation, state.Rotation + state.AngularVelocity * age,
-                        Mathf.Min(1f, Time.deltaTime * 12f));
+                    bool streamed=motionStream.Sample(state.Id,now,out MotionPose pose);
+                    replica.Body.position=streamed?new Vector2(pose.X,pose.Y):position;
+                    replica.Body.rotation=streamed?pose.Rotation:state.Rotation+state.AngularVelocity*age;
                     // Kinematic velocity preserves relative speed for landing and drag.
                     bool predicting = elapsed < MaxPredictionSeconds && state.Active;
-                    replica.Body.velocity = predicting ? new Vector2(state.VelocityX, state.VelocityY) : Vector2.zero;
-                    replica.Body.angularVelocity = predicting ? state.AngularVelocity : 0f;
+                    if(streamed)
+                    {
+                        bool fresh=motionStream.Fresh(state.Id,now) && Time.timeScale>0;
+                        replica.Body.velocity=fresh?new Vector2(pose.VX,pose.VY)/Time.timeScale:Vector2.zero;
+                        replica.Body.angularVelocity=fresh?pose.AngularVelocity/Time.timeScale:0;
+                    }
+                    else
+                    {replica.Body.velocity = predicting ? new Vector2(state.VelocityX, state.VelocityY) : Vector2.zero;
+                    replica.Body.angularVelocity = predicting ? state.AngularVelocity : 0f;}
+                    var local=player.Instance;
+                    if(state.Active && !state.IsBlackHole && local!=null && local.gameObject.activeInHierarchy && !local.dead && !PlayerLifeController.Spectating &&
+                        supernovaWarnings.TryWarn(state.Id,state.SupernovaSeconds,elapsed,
+                            (local.transform.position-replica.Object.transform.position).sqrMagnitude,true))
+                        local.SupernovaWarn();
                 }
                 UpdateMapReferences();
             }
@@ -231,12 +256,11 @@ namespace Orbit_Us
                 }
                 var states = new List<PlanetState>();
                 foreach (var body in bodies) states.Add(Capture(body, hostIds[body], PrefabKey(body)));
-                foreach (var body in new List<gravity>(hostIds.Keys)) if (body == null) hostIds.Remove(body);
-                // Full appearance/stock is sent at 2 Hz, reduced for large worlds.
-                // Each visual has strings and color data; estimate conservatively.
-                int bytes = 0;
-                foreach (var state in states) bytes += 180 + state.Visuals.Count * 180 + state.Shops.Count * 160;
-                interval = Mathf.Max(0.5f, bytes / 100000f);
+                foreach (var body in new List<gravity>(hostIds.Keys)) if (body == null)
+                {int id=hostIds[body];hostMotionBodies.Remove(id);motionSender.Remove(id);hostIds.Remove(body);}
+                // Appearance/stock stays separate from fast movement. Compressed
+                // wire bytes share a budget, rather than slowing the motion clock.
+                interval = 0.5f;
                 await connection.SendPlanetSnapshot(states, nextSnapshot++);
             }
             catch (Exception ex) { Debug.LogError($"[Orbit-Us] Planet snapshot failed: {ex}"); }
@@ -253,6 +277,7 @@ namespace Orbit_Us
                 stablePaths[body.gameObject] = BuildPaths(template, t, null);
             }
             var rb = body.GetComponent<Rigidbody2D>();
+            if(isHost)hostMotionBodies[id]=rb;
             var temp = body.GetComponent<temperature>();
             var sun = body.GetComponent<star>();
             var kick = body.GetComponent<kickStart>();
@@ -271,6 +296,7 @@ namespace Orbit_Us
                 VelocityY = moving ? rb.velocity.y : 0f,
                 AngularVelocity = moving ? rb.angularVelocity : 0f,
                 Heat = temp != null ? temp.heat : 0f,
+                SupernovaSeconds=sun!=null?SupernovaWarningState.Remaining(sun.mainSequence,body.GetComponent<blackHole>()!=null,rb.mass,sun.lifetimeSeconds):0,
                 ParentId = kick != null && kick.parent != null && hostIds.TryGetValue(kick.parent, out int parent) ? parent : 0
             };
             foreach (var sr in body.GetComponentsInChildren<SpriteRenderer>(true))
@@ -355,8 +381,16 @@ namespace Orbit_Us
 
         private void HandlePacket(NetworkPacket packet)
         {
-            if (!initialized || isHost || packet.Type != PacketType.PlanetSnapshot) return;
-            if (!assembler.TryAdd(packet.Data, out List<PlanetState> states)) return;
+            if(!initialized || isHost)return;
+            if(packet.Type==PacketType.PlanetMotion)
+            {
+                var motion=packet.Decoded as WorldMotionBatch;
+                if(motion==null && !WorldMotionCodec.TryDecode(packet.Data,out motion))return;
+                motionStream.Observe(motion,packet.ReceivedAt>0?packet.ReceivedAt:NetworkTime.Now);return;
+            }
+            if(packet.Type!=PacketType.PlanetSnapshot)return;
+            var states=packet.Decoded as List<PlanetState>;
+            if(states==null && (packet.SnapshotValidated || !assembler.TryAdd(packet.Data,out states)))return;
             pendingSnapshot = states;
             RefreshCatalog();
             TryApplyPendingSnapshot();
@@ -563,7 +597,7 @@ namespace Orbit_Us
             obj.tag = state.Tag;
             obj.transform.localScale = new Vector3(state.ScaleX, state.ScaleY, 1f);
             replica.Body.mass = state.Mass;
-            if (first || (replica.Body.position - new Vector2(state.X, state.Y)).sqrMagnitude > 1000000f)
+            if (first || (!motionStream.Latest(state.Id,out _) && (replica.Body.position - new Vector2(state.X, state.Y)).sqrMagnitude > 1000000f))
             {
                 replica.Body.position = new Vector2(state.X, state.Y);
                 replica.Body.rotation = state.Rotation;
@@ -693,6 +727,8 @@ namespace Orbit_Us
 
         private void RemoveReplica(int id)
         {
+            motionStream.Remove(id);
+            supernovaWarnings.Remove(id);
             var replica = replicas[id];
             if (replica.Object != null && replica.State != null && !replica.State.CentralBlackHole)
             {
@@ -720,9 +756,11 @@ namespace Orbit_Us
         public void Destroy()
         {
             connection.OnPacketReceived -= HandlePacket;
+            supernovaWarnings.Clear();
             RestoreCenter();
             pendingSnapshot = null;
             initialized = false;
+            hostMotionBodies.Clear();motionSender.Clear();motionStream.Clear();
             foreach (int id in new List<int>(replicas.Keys)) RemoveReplica(id);
             foreach (var pair in stoppedMaps)
                 if (pair.Key != null)
@@ -735,6 +773,18 @@ namespace Orbit_Us
             stoppedMaps.Clear();
             if (staging != null) UnityEngine.Object.Destroy(staging);
             if (Instance == this) Instance = null;
+        }
+        private void SendMotion()
+        {
+            double now=NetworkTime.PhysicsSample(Math.Min(Time.fixedDeltaTime,Time.timeAsDouble-Time.fixedTimeAsDouble),Time.timeScale);
+            var batch=new WorldMotionBatch {Planets=true,Sequence=++motionSequence,Time=now,TimeScale=Time.timeScale};
+            foreach(var pair in hostIds)
+            {
+                var body=pair.Key;if(body==null || !body.gameObject.activeInHierarchy || !hostMotionBodies.TryGetValue(pair.Value,out Rigidbody2D rb) || rb==null)continue;
+                var motion=new WorldMotion {Id=pair.Value,X=rb.position.x,Y=rb.position.y,VX=rb.velocity.x,VY=rb.velocity.y,Rotation=rb.rotation,AngularVelocity=rb.angularVelocity};
+                if(motionSender.Changed(motion,now,batch.TimeScale))batch.Entities.Add(motion);
+            }
+            _=connection.SendWorldMotion(batch);
         }
     }
 

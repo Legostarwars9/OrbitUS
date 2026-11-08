@@ -46,6 +46,7 @@
     <ItemGroup>
         <Compile Include="OrbitUs.cs" />
         <Compile Include="UI\MultiplayerMenu.cs" />
+        <Compile Include="UI\GameMenuTheme.cs" />
         <Compile Include="Audio\TeleportSound.cs" />
         <Compile Include="CombatSyncing\CombatState.cs" />
         <Compile Include="CombatSyncing\CombatSnapshotCodec.cs" />
@@ -55,16 +56,22 @@
         <Compile Include="ProgressionSyncing\ProgressState.cs" />
         <Compile Include="ProgressionSyncing\ProgressSnapshotCodec.cs" />
         <Compile Include="ProgressionSyncing\ProgressReplicator.cs" />
+        <Compile Include="ProgressionSyncing\StoryTextPresentation.cs" />
         <Compile Include="ProgressionSyncing\BossHealthBarPresentation.cs" />
         <Compile Include="ProgressionSyncing\EndingPresentation.cs" />
         <Compile Include="ProgressionSyncing\ProgressSyncPatches.cs" />
 
         <Compile Include="Networking\RoomProtocol.cs" />
         <Compile Include="Networking\RoomTransport.cs" />
+        <Compile Include="Networking\MatchmakingServers.cs" />
         <Compile Include="Networking\NetworkPacket.cs" />
         <Compile Include="Networking\NetworkUDPConnection.cs" />
         <Compile Include="Networking\NetworkUDPServer.cs" />
         <Compile Include="Networking\PacketSerializer.cs" />
+        <Compile Include="Networking\MotionInterpolation.cs" />
+        <Compile Include="Networking\WorldMotionCodec.cs" />
+        <Compile Include="Networking\WorldMotionInbox.cs" />
+        <Compile Include="Networking\GameplaySendBudget.cs" />
         <Compile Include="Networking\PendingPacketBuffer.cs" />
 
         <Compile Include="EnemySyncing\EnemyReplicator.cs" />
@@ -77,6 +84,7 @@
         <Compile Include="EnemySyncing\EnemySnapshotCodec.cs" />
 
         <Compile Include="PlanetSyncing\PlanetReplicator.cs" />
+        <Compile Include="PlanetSyncing\SupernovaWarningState.cs" />
         <Compile Include="PlanetSyncing\PlanetSyncPatches.cs" />
         <Compile Include="PlanetSyncing\PlanetSnapshotCodec.cs" />
 
@@ -106,6 +114,7 @@
     </Target>
     -->
     <ItemGroup>
+        <Reference Include="System.IO.Compression" />
         <Reference Include="BepInEx">
             <HintPath>$(OrbitUsGameDir)/BepInEx/core/BepInEx.dll</HintPath>
             <Private>False</Private>

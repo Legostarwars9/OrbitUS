@@ -6,6 +6,7 @@ namespace Orbit_Us
     using UnityEngine;
     using System;
     using System.Threading.Tasks;
+    using System.Threading;
     using HarmonyLib;
 
     [BepInPlugin("com.legostarwars9.orbit-us", "Orbit-Us", "0.4.0")]
@@ -31,8 +32,9 @@ namespace Orbit_Us
         private float lobbyStartRetry;
         private RoomTransport room;
         private Task<RoomTransport> roomTask;
-        private ConfigEntry<string> matchmakingAddress,matchmakingAccess;
-        private ConfigEntry<int> matchmakingPort;
+        private CancellationTokenSource roomSelectionCancellation;
+        private ConfigEntry<string> matchmakingAddress,matchmakingAccess,matchmakingServers;
+        private ConfigEntry<int> matchmakingPort,matchmakingProbeTimeout,matchmakingConnectTimeout;
         private ConfigEntry<string> username;
         public string Username
         {
@@ -41,7 +43,6 @@ namespace Orbit_Us
         }
         public RoomTransport Room=>room;
         public bool RoomRequested=>room!=null || roomTask!=null;
-        public string MatchmakingEndpoint=>matchmakingAddress.Value+(matchmakingPort.Value==3478?"":":"+matchmakingPort.Value);
         public NetworkUDPConnection Connection=>networkUDPConnection;
         public bool SessionActive=>udpConnected;
         public bool GameplayConnected=>udpConnected && replicationInitialized && !teamGameOverApplied;
@@ -96,16 +97,22 @@ namespace Orbit_Us
         private void LoadConfig()
         {
             username=Config.Bind("Player","Username","","Your multiplayer display name (up to 24 characters). Blank uses Player ID.");
-            matchmakingAddress=Config.Bind("Matchmaking","ServerAddress","orbitstun.legostarwars9.com","IP address or DNS name of your running OrbitUS-P2P-Server, without a URL scheme or port. All players use the same server.");
-            matchmakingPort=Config.Bind("Matchmaking","Port",12415,
-                new ConfigDescription("UDP port of OrbitUS-P2P-Server. This is separate from the game's direct-connection ports.",new AcceptableValueRange<int>(1,65535)));
+            matchmakingAddress=Config.Bind("Matchmaking","ServerAddress","13.58.19.18","Legacy single-server address. Used with Port when Servers is blank; existing settings seed the initial Servers list.");
+            matchmakingPort=Config.Bind("Matchmaking","Port",3478,
+                new ConfigDescription("Legacy single-server UDP port. Used when Servers is blank.",new AcceptableValueRange<int>(1,65535)));
+            matchmakingServers=Config.Bind("Matchmaking","Servers",matchmakingAddress.Value+":"+matchmakingPort.Value,
+                "Comma-separated matchmaking servers, e.g. 13.58.19.18:3478 (maximum 16). Hosts use the lowest median UDP ping. Joining searches the reachable servers by ping for the room code. Blank uses legacy ServerAddress/Port.");
+            matchmakingProbeTimeout=Config.Bind("Matchmaking","ProbeTimeoutMs",1000,
+                new ConfigDescription("Timeout per UDP latency probe; three probes run per server, with servers checked in parallel.",new AcceptableValueRange<int>(100,5000)));
+            matchmakingConnectTimeout=Config.Bind("Matchmaking","ConnectTimeoutMs",5000,
+                new ConfigDescription("Maximum registration time per reachable matchmaking server before trying the next.",new AcceptableValueRange<int>(1000,30000)));
             matchmakingAccess=Config.Bind("Matchmaking","AccessKey","","Optional ORBITUS_ACCESS_KEY configured by the server operator.");
             serverAddress =
                 Config.Bind(
                     "Network",
                     "ServerAddress",
                     "[Put IP address Here]",
-                    "Host IP address or DNS name for Direct IP / VPN and F7 joining. Room codes use Matchmaking.ServerAddress instead."
+                    "Host IP address or DNS name for Direct IP / VPN and F7 joining. Room codes use Matchmaking.Servers instead."
                 );
 
             udpPort =
@@ -184,6 +191,7 @@ namespace Orbit_Us
 
         private void Update()
         {
+            NetworkTime.BeginFrame(Time.realtimeSinceStartupAsDouble-Time.unscaledTimeAsDouble);
             UpdateRoom();
             multiplayerMenu?.Update();
             // Let the wipe notification finish before starting another connection.
@@ -297,20 +305,19 @@ namespace Orbit_Us
         public void HostDirectLobby(int port)
         {networkUDPServer.LoopbackClientsOnly=false;udpPort.Value=port;HostLobby();}
 
-        public void BeginCodeRoom(string endpoint,string code,bool host)
+        public void BeginCodeRoom(string code, bool host)
         {
             if(udpConnected || RoomRequested)return;
             try
             {
-                endpoint=endpoint.Trim();int port=3478;
-                int colon=endpoint.LastIndexOf(':');
-                if(colon>=0){port=int.Parse(endpoint.Substring(colon+1));endpoint=endpoint.Substring(0,colon);}
-                if(endpoint.Length==0 || port<1 || port>65535)throw new ArgumentException("Enter the matchmaking server address and port.");
+                string configured=string.IsNullOrWhiteSpace(matchmakingServers.Value)?matchmakingAddress.Value+":"+matchmakingPort.Value:matchmakingServers.Value;
+                var servers=MatchmakingServer.ParseList(configured);
                 if(!host)code=RoomProtocol.NormalizeCode(code);
-                matchmakingAddress.Value=endpoint;matchmakingPort.Value=port;
                 if(host){networkUDPServer.LoopbackClientsOnly=true;HostLobby();if(!udpConnected)return;}
-                roomTask=RoomTransport.CreateAsync(endpoint,port,host,code,matchmakingAccess.Value,udpPort.Value);
-                NetworkStatus="Contacting matchmaking server...";
+                roomSelectionCancellation=new CancellationTokenSource();
+                roomTask=MatchmakingServers.ConnectAsync(servers,matchmakingProbeTimeout.Value,matchmakingConnectTimeout.Value,
+                    host,code,matchmakingAccess.Value,udpPort.Value,Username,roomSelectionCancellation.Token);
+                NetworkStatus=host?"Finding the best matchmaking server...":"Finding your room...";
             }
             catch(Exception ex){NetworkStatus=ex.Message;}
         }
@@ -319,6 +326,8 @@ namespace Orbit_Us
             if(roomTask!=null && roomTask.IsCompleted)
             {
                 var completed=roomTask;roomTask=null;
+                roomSelectionCancellation?.Dispose();roomSelectionCancellation=null;
+                if(completed.IsCanceled){NetworkStatus="Matchmaking cancelled.";LeaveSession();return;}
                 if(completed.IsFaulted){NetworkStatus=completed.Exception.GetBaseException().Message;LeaveSession();return;}
                 room=completed.Result;
                 room.LocalUsername=Username;
@@ -335,12 +344,18 @@ namespace Orbit_Us
         }
         private void CloseRoom()
         {
+            var cancellation=roomSelectionCancellation;roomSelectionCancellation=null;cancellation?.Cancel();
             room?.Dispose();room=null;
             if(roomTask!=null)
             {
-                _=roomTask.ContinueWith(t=>{if(t.Status==TaskStatus.RanToCompletion)t.Result.Dispose();else{var ignored=t.Exception;}},TaskScheduler.Default);
+                _=roomTask.ContinueWith(t=>
+                {
+                    try{if(t.Status==TaskStatus.RanToCompletion)t.Result.Dispose();else{var ignored=t.Exception;}}
+                    finally{cancellation?.Dispose();}
+                },TaskScheduler.Default);
                 roomTask=null;
             }
+            else cancellation?.Dispose();
         }
         private void ReturnToMenu()
         {
@@ -447,7 +462,7 @@ namespace Orbit_Us
                 return;
             }
 
-            transformSendTimer = 0f;
+            transformSendTimer %= TransformSendRate;
 
             SendLocalPlayerTransform();
         }

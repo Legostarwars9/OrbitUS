@@ -295,6 +295,7 @@ namespace Orbit_Us
                             playerId;
                         // Host identity comes from relay registration, never a client claim.
                         transform.IsHost=hostEndpoint!=null && hostEndpoint.Equals(sender);
+                        if(!transform.IsHost || transform.SpectatingPlayerId==playerId)transform.SpectatingPlayerId=0;
 
                         NetworkPacket outgoingPacket =
                             new NetworkPacket
@@ -320,6 +321,12 @@ namespace Orbit_Us
                             data,
                             sender
                         );
+                    }
+                    if(packet.Type==PacketType.EnemyMotion || packet.Type==PacketType.PlanetMotion)
+                    {
+                        if(hostEndpoint==null || !hostEndpoint.Equals(sender) || !WorldMotionCodec.TryDecode(packet.Data,out WorldMotionBatch motion) ||
+                            motion.Planets!=(packet.Type==PacketType.PlanetMotion))continue;
+                        await Broadcast(socket,clients,result.Buffer,sender);continue;
                     }
                     if (packet.Type == PacketType.EnemySnapshot)
                     {
@@ -456,6 +463,10 @@ namespace Orbit_Us
                     if(packet.Type==PacketType.CombatSnapshot)
                     {
                         if(CombatSnapshotCodec.ReadOwner(packet.Data)!=clients[sender])continue;
+                        // Host combat has the same authority as host enemy/planet
+                        // snapshots. Forward its validated chunks immediately.
+                        if(hostEndpoint!=null && hostEndpoint.Equals(sender))
+                        {await Broadcast(socket,clients,result.Buffer,sender);continue;}
                         if(!combatFrames.TryGetValue(sender,out CombatSnapshotCodec.Assembler assembler))
                         {assembler=new CombatSnapshotCodec.Assembler();combatFrames.Add(sender,assembler);}
                         if(!assembler.TryAdd(packet.Data,out CombatFrame frame))continue;
@@ -640,7 +651,7 @@ namespace Orbit_Us
             // Tell every existing player about the new player.
             foreach (
                 IPEndPoint client
-                in new List<IPEndPoint>(clients.Keys))
+                in clients.Keys)
             {
                 if (client.Equals(sender))
                     continue;
@@ -704,7 +715,7 @@ namespace Orbit_Us
         {
             foreach (
                 IPEndPoint client
-                in new List<IPEndPoint>(clients.Keys))
+                in clients.Keys)
             {
                 if (sender != null &&
                     client.Equals(sender))

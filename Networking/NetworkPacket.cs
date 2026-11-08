@@ -36,12 +36,18 @@ namespace Orbit_Us
         HostKick,
         PlayerKicked,
         LobbyState,
-        PlayerName
+        PlayerName,
+        EnemyMotion,
+        PlanetMotion,
+        CompressedSnapshot
     }
 
     public class NetworkPacket
     {
         public PacketType Type { get; set; }
         public byte[] Data { get; set; }
+        internal object Decoded;
+        internal bool SnapshotValidated;
+        internal double ReceivedAt;
     }
 }

@@ -17,6 +17,7 @@ namespace Orbit_Us
         private bool hudVisible,simulated,controllerEnabled,active=true,restoreColliders;
         private float protectedUntil;
         private GUIStyle titleStyle,detailStyle;
+        private GUISkin styledSkin;
         public Vector2 DeathPosition {get;private set;}
         public bool IsSpectating=>saved!=null && local!=null;
         public bool IgnoreDamage=>IsSpectating || Time.unscaledTime<protectedUntil;
@@ -121,19 +122,31 @@ namespace Orbit_Us
         public void Draw()
         {
             if(!IsSpectating)return;
-            if(titleStyle==null)
+            GUISkin previousSkin=GUI.skin;Matrix4x4 matrix=GUI.matrix;Color color=GUI.color;
+            try
             {
-                titleStyle=new GUIStyle(GUI.skin.label){fontSize=22,fontStyle=FontStyle.Bold,alignment=TextAnchor.MiddleCenter};
-                detailStyle=new GUIStyle(GUI.skin.label){fontSize=15,alignment=TextAnchor.MiddleCenter};
+                GUI.skin=GameMenuTheme.Skin;
+                if(styledSkin!=GUI.skin || titleStyle==null)
+                {
+                    styledSkin=GUI.skin;
+                    titleStyle=new GUIStyle(GUI.skin.label){fontSize=21,fontStyle=GUI.skin.button.fontStyle,alignment=TextAnchor.MiddleCenter,clipping=TextClipping.Clip};
+                    detailStyle=new GUIStyle(GUI.skin.label){fontSize=13,alignment=TextAnchor.MiddleCenter,wordWrap=true};
+                    detailStyle.normal.textColor=GameMenuTheme.MutedColor;
+                }
+                float scale=Mathf.Clamp(Mathf.Min(Screen.width/900f,Screen.height/640f),.5f,1.5f);
+                GUI.matrix=Matrix4x4.Scale(new Vector3(scale,scale,1));
+                float width=Mathf.Min(580,Screen.width/scale-32);
+                Rect panel=new Rect((Screen.width/scale-width)/2f,Screen.height/scale-170,width,146);
+                GameMenuTheme.Panel(panel);
+                int target=network.Spectators.EnsureTarget(Time.unscaledTime);
+                string title=target>0?"Spectating "+network.PlayerLabel(target):"No living players to spectate";
+                GUI.Label(new Rect(panel.x+16,panel.y+12,panel.width-32,30),title,titleStyle);
+                GUI.Label(new Rect(panel.x+20,panel.y+46,panel.width-40,40),target>0?"Build and money saved. Revive on the next upload or boss defeat.":"Build saved. Waiting for a task revive. Escape opens the menu.",detailStyle);
+                float buttonWidth=Mathf.Min(180,(panel.width-60)/2);
+                if(GUI.Button(new Rect(panel.center.x-buttonWidth-8,panel.y+98,buttonWidth,32),"Previous"))network.Spectators.Cycle(-1,Time.unscaledTime);
+                if(GUI.Button(new Rect(panel.center.x+8,panel.y+98,buttonWidth,32),"Next"))network.Spectators.Cycle(1,Time.unscaledTime);
             }
-            Rect panel=new Rect((Screen.width-520)/2f,Screen.height-135,520,115);
-            GUI.Box(panel,GUIContent.none);
-            int target=network.Spectators.EnsureTarget(Time.unscaledTime);
-            string title=target>0?"Spectating "+network.PlayerLabel(target):"No living players to spectate";
-            GUI.Label(new Rect(panel.x,panel.y+4,panel.width,30),title,titleStyle);
-            GUI.Label(new Rect(panel.x,panel.y+34,panel.width,26),target>0?"Build and money saved. Revive on the next upload or boss defeat.":"Build saved. Waiting for a task revive. Escape opens the menu.",detailStyle);
-            if(GUI.Button(new Rect(panel.x+70,panel.y+72,145,30),"A  Previous"))network.Spectators.Cycle(-1,Time.unscaledTime);
-            if(GUI.Button(new Rect(panel.x+305,panel.y+72,145,30),"Next  D"))network.Spectators.Cycle(1,Time.unscaledTime);
+            finally{GUI.skin=previousSkin;GUI.matrix=matrix;GUI.color=color;}
         }
         public void Dispose()
         {

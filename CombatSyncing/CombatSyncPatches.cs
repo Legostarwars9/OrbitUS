@@ -7,6 +7,18 @@ using UnityEngine;
 namespace Orbit_Us
 {
     [HarmonyPatch]
+    public static class CombatProjectileImpactPatch
+    {
+        public static IEnumerable<MethodBase> TargetMethods()
+        {
+            foreach(var type in typeof(projectile).Assembly.GetTypes())
+                if(typeof(projectile).IsAssignableFrom(type))
+                    foreach(var method in AccessTools.GetDeclaredMethods(type))
+                        if(method.Name=="ProjectileExplode" || method.Name=="ProjectileExplodeLight")yield return method;
+        }
+        public static void Prefix(projectile __instance)=>CombatReplicator.Instance?.CaptureProjectileImpact(__instance);
+    }
+    [HarmonyPatch]
     public static class CombatProjectileLifecyclePatch
     {
         public static IEnumerable<MethodBase> TargetMethods()

@@ -16,11 +16,16 @@ namespace Orbit_Us
         private readonly Dictionary<int,Marker> markers=new Dictionary<int,Marker>();
         private readonly List<Rect> occupied=new List<Rect>();
         private GUIStyle textStyle;
+        private static readonly Dictionary<int,Color> playerColors=new Dictionary<int,Color>();
+        private static readonly System.Random random=new System.Random(System.Guid.NewGuid().GetHashCode());
 
         public static Color ColorFor(int playerId)
         {
-            var random=new System.Random(unchecked(playerId*5023));
-            return Color.HSVToRGB((float)random.NextDouble(),0.75f,1f);
+            if(playerColors.TryGetValue(playerId,out Color existing))return existing;
+            var color=new Color((float)random.NextDouble(),(float)random.NextDouble(),(float)random.NextDouble(),1f);
+            // Keep randomly drawn dark colors readable against space.
+            if(color.grayscale<0.22f)color=Color.Lerp(color,Color.white,0.3f);
+            playerColors[playerId]=color;return color;
         }
         public void Register(int id,SpriteRenderer ship)
         {
@@ -30,12 +35,12 @@ namespace Orbit_Us
         {
             if(!markers.TryGetValue(id,out Marker marker))return;
             marker.Positioned=true;
-            string name=(OrbitUs.Instance?.Connection?.GetPlayerName(id)??"Player "+id)+(host?" (Host)":"");
+            string name=OrbitUs.Instance?.Connection?.GetPlayerName(id)??"Player "+id;
             if(marker.Host!=host || marker.Text.text!=name)
             {marker.Host=host;marker.Text.text=name;}
         }
         public void Remove(int id)=>markers.Remove(id);
-        public void Clear(){markers.Clear();occupied.Clear();textStyle=null;}
+        public void Clear(){markers.Clear();occupied.Clear();textStyle=null;playerColors.Clear();}
 
         public void Draw()
         {

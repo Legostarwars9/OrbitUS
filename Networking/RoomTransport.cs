@@ -43,7 +43,7 @@ namespace Orbit_Us
         private readonly object[][] lan;
         private string code,cookie="",status="Contacting matchmaking server...",ended="";
         private long revision;
-        private bool disposed,accepted,registrationRetryRequested;
+        private bool disposed,accepted,registrationRetryRequested,registered;
         private DateTime lastRegistration,lastSignal,created=DateTime.UtcNow;
         private IPEndPoint localClient;
         public bool IsHost=>host;
@@ -52,6 +52,7 @@ namespace Orbit_Us
         public string Status {get{lock(gate)return status;}}
         public string EndedReason {get{lock(gate)return ended;}}
         public bool Accepted {get{lock(gate)return accepted;}}
+        public bool Registered {get{lock(gate)return registered;}}
         public int LocalPort {get;}
         public static Task<RoomTransport> CreateAsync(string address,int signalingPort,bool host,string room,string access,int gamePort)
             =>Task.Run(()=>
@@ -188,7 +189,7 @@ namespace Orbit_Us
             {
                 string assigned=RoomProtocol.NormalizeCode(message.Room);
                 if(code.Length>0 && code!=assigned)return;
-                code=assigned;status=host?"Share this code with your friends.":accepted?"Connected to host.":
+                code=assigned;registered=true;status=host?"Share this code with your friends.":accepted?"Connected to host.":
                     peers.Values.Any(p=>p.Endpoint!=null)?"Waiting for host approval...":"Finding a path to the host...";
             }
             else if(message.Op=="peer")

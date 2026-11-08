@@ -17,8 +17,11 @@ namespace Orbit_Us
         private byte[][] latestPlanetSnapshot;
         private readonly ProgressSnapshotCodec.Assembler progressSnapshots = new ProgressSnapshotCodec.Assembler();
         private byte[][] latestProgressSnapshot;
+        private object latestEnemyData,latestPlanetData,latestProgressData;
+        private readonly WorldMotionInbox enemyMotion=new WorldMotionInbox(),planetMotion=new WorldMotionInbox();
         private readonly Dictionary<int, CombatSnapshotCodec.Assembler> combat = new Dictionary<int, CombatSnapshotCodec.Assembler>();
         private readonly Dictionary<int, byte[][]> latestCombat = new Dictionary<int, byte[][]>();
+        private readonly Dictionary<int,CombatFrame> latestCombatData=new Dictionary<int,CombatFrame>();
         private const int MaxEvents = 4096;
         private const int MaxPlayers = 256;
 
@@ -26,6 +29,8 @@ namespace Orbit_Us
         {
             lock (gate)
             {
+                if(packet.Type==PacketType.EnemyMotion){enemyMotion.Add(packet);return;}
+                if(packet.Type==PacketType.PlanetMotion){planetMotion.Add(packet);return;}
                 if (packet.Type == PacketType.PlayerTransform)
                 {
                     if (!PlayerTransformData.TryDeserialize(packet.Data,out PlayerTransformData transform) || transform.PlayerId<=0) return;
@@ -35,21 +40,23 @@ namespace Orbit_Us
                     }
                     else if (sequences.Count >= MaxPlayers) return;
                     sequences[transform.PlayerId] = transform.Sequence;
+                    packet.Decoded=transform;
                     players[transform.PlayerId] = packet;
                 }
                 else if (packet.Type == PacketType.EnemySnapshot)
                 {
-                    if (snapshots.TryAdd(packet.Data, out _))
-                        latestSnapshot = snapshots.CompletedChunks;
+                    if (snapshots.TryAdd(packet.Data, out var state))
+                    {latestSnapshot = snapshots.CompletedChunks;latestEnemyData=state;}
                 }
                 else if (packet.Type == PacketType.PlanetSnapshot)
                 {
-                    if (planetSnapshots.TryAdd(packet.Data, out _))
-                        latestPlanetSnapshot = planetSnapshots.CompletedChunks;
+                    if (planetSnapshots.TryAdd(packet.Data, out var state))
+                    {latestPlanetSnapshot = planetSnapshots.CompletedChunks;latestPlanetData=state;}
                 }
                 else if (packet.Type == PacketType.ProgressSnapshot)
                 {
-                    if (progressSnapshots.TryAdd(packet.Data, out _)) latestProgressSnapshot = progressSnapshots.CompletedChunks;
+                    if (progressSnapshots.TryAdd(packet.Data, out var state))
+                    {latestProgressSnapshot = progressSnapshots.CompletedChunks;latestProgressData=state;}
                 }
                 else if (packet.Type == PacketType.CombatSnapshot)
                 {
@@ -60,7 +67,8 @@ namespace Orbit_Us
                         if(combat.Count>=MaxPlayers) return;
                         buffer=new CombatSnapshotCodec.Assembler();combat.Add(owner,buffer);
                     }
-                    if(buffer.TryAdd(packet.Data,out _)) latestCombat[owner]=buffer.CompletedChunks;
+                    if(buffer.TryAdd(packet.Data,out CombatFrame state))
+                    {latestCombat[owner]=buffer.CompletedChunks;latestCombatData[owner]=state;}
                 }
                 else
                 {
@@ -69,6 +77,7 @@ namespace Orbit_Us
                         int id = BitConverter.ToInt32(packet.Data, 0);
                         players.Remove(id);
                         combat.Remove(id);latestCombat.Remove(id);
+                        latestCombatData.Remove(id);
                         sequences.Remove(id);
                     }
                     // Damage and ACKs retry; drop overflow rather than retain an
@@ -128,27 +137,32 @@ namespace Orbit_Us
                 events.Clear();
                 result.AddRange(players.Values);
                 players.Clear();
+                enemyMotion.Drain(result);planetMotion.Drain(result);
                 if (latestSnapshot != null)
                 {
-                    foreach (byte[] chunk in latestSnapshot)
-                        result.Add(new NetworkPacket { Type = PacketType.EnemySnapshot, Data = chunk });
+                    for(int i=0;i<latestSnapshot.Length;i++)
+                        result.Add(new NetworkPacket {Type=PacketType.EnemySnapshot,Data=latestSnapshot[i],SnapshotValidated=true,Decoded=i==latestSnapshot.Length-1?latestEnemyData:null});
                     latestSnapshot = null;
+                    latestEnemyData=null;
                 }
                 if (latestPlanetSnapshot != null)
                 {
-                    foreach (byte[] chunk in latestPlanetSnapshot)
-                        result.Add(new NetworkPacket { Type = PacketType.PlanetSnapshot, Data = chunk });
+                    for(int i=0;i<latestPlanetSnapshot.Length;i++)
+                        result.Add(new NetworkPacket {Type=PacketType.PlanetSnapshot,Data=latestPlanetSnapshot[i],SnapshotValidated=true,Decoded=i==latestPlanetSnapshot.Length-1?latestPlanetData:null});
                     latestPlanetSnapshot = null;
+                    latestPlanetData=null;
                 }
                 if (latestProgressSnapshot != null)
                 {
-                    foreach (byte[] chunk in latestProgressSnapshot)
-                        result.Add(new NetworkPacket { Type = PacketType.ProgressSnapshot, Data = chunk });
+                    for(int i=0;i<latestProgressSnapshot.Length;i++)
+                        result.Add(new NetworkPacket {Type=PacketType.ProgressSnapshot,Data=latestProgressSnapshot[i],SnapshotValidated=true,Decoded=i==latestProgressSnapshot.Length-1?latestProgressData:null});
                     latestProgressSnapshot = null;
+                    latestProgressData=null;
                 }
-                foreach(var chunks in latestCombat.Values)
-                    foreach(var chunk in chunks) result.Add(new NetworkPacket {Type=PacketType.CombatSnapshot,Data=chunk});
+                foreach(var pair in latestCombat)
+                    for(int i=0;i<pair.Value.Length;i++)result.Add(new NetworkPacket {Type=PacketType.CombatSnapshot,Data=pair.Value[i],SnapshotValidated=true,Decoded=i==pair.Value.Length-1?latestCombatData[pair.Key]:null});
                 latestCombat.Clear();
+                latestCombatData.Clear();
                 return result;
             }
         }

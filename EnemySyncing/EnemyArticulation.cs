@@ -17,7 +17,7 @@ namespace Orbit_Us
         {
             while(t!=null)
             {
-                if(t.GetComponent<plantBoss>()!=null || t.GetComponent<planetBoss>()!=null || t.GetComponent<worm>()!=null || t.GetComponent<hunterController>()!=null)return true;
+                if(t.GetComponent<plantBoss>()!=null || t.GetComponent<planetBoss>()!=null || t.GetComponent<worm>()!=null || t.GetComponent<hunterController>()!=null || t.GetComponent<matBoss>()!=null)return true;
                 t=t.parent;
             }
             return false;
@@ -49,16 +49,32 @@ namespace Orbit_Us
                 if(h!=null)id=ExtraId(h);
                 else if(!extraVisualPartIds.TryGetValue(obj,out id))
                 {id=nextEnemyId++;extraVisualPartIds.Add(obj,id);}
+                RegisterMotionTarget(obj,id);
                 list.Add(new EnemyTransformData {EnemyId=id,Type=type,X=obj.transform.position.x,Y=obj.transform.position.y,Rotation=obj.transform.eulerAngles.z,HP=h!=null?h.hp:0,Nodes=CaptureArticulation(obj,type)});
             }
-            foreach(var obj in new List<GameObject>(extraVisualPartIds.Keys))if(obj==null)extraVisualPartIds.Remove(obj);
-            foreach(var h in new List<health>(extraHealthIds.Keys))if(h==null){extraHealthById.Remove(extraHealthIds[h]);extraHealthIds.Remove(h);}
+            foreach(var obj in new List<GameObject>(extraVisualPartIds.Keys))if(obj==null)
+            {int id=extraVisualPartIds[obj];motionTargets.Remove(id);motionSender.Remove(id);extraVisualPartIds.Remove(obj);}
+            foreach(var h in new List<health>(extraHealthIds.Keys))if(h==null)
+            {int id=extraHealthIds[h];motionTargets.Remove(id);motionSender.Remove(id);extraHealthById.Remove(id);extraHealthIds.Remove(h);}
         }
         private List<EnemyNodePose> CaptureArticulation(GameObject obj,int type)
         {
             var list=new List<EnemyNodePose>();
-            if(obj.GetComponent<plantFoot>()==null && obj.GetComponent<wormPart>()==null && !HasBossAncestor(obj.transform))return list;
             if(!prefabs.TryGetValue(type,out GameObject prefab) || prefab==null)return list;
+            if(obj.GetComponent<plantFoot>()==null && obj.GetComponent<wormPart>()==null && !HasBossAncestor(obj.transform))
+            {
+                var h=obj.GetComponent<health>();var original=prefab.GetComponent<health>();
+                Vector3 scale=obj.transform.lossyScale;
+                // Ordinary enemies normally retain prefab HP capacity/size. Only
+                // send root metadata when those change (e.g. a growing Materiaphage).
+                if((h==null || original==null || h.hpMax==original.hpMax) && scale==prefab.transform.localScale)return list;
+                var sr=obj.GetComponent<SpriteRenderer>();
+                list.Add(new EnemyNodePose {Path="",ScaleX=scale.x,ScaleY=scale.y,ScaleZ=scale.z,
+                    Active=obj.activeSelf,RendererEnabled=sr==null||sr.enabled,Sprite=sr!=null && sr.sprite!=null?sr.sprite.name:"",
+                    R=sr!=null?sr.color.r:1,G=sr!=null?sr.color.g:1,B=sr!=null?sr.color.b:1,A=sr!=null?sr.color.a:1,
+                    HP=h!=null?h.hp:0,MaxHP=h!=null?h.hpMax:0});
+                return list;
+            }
             CaptureNodes(obj.transform,prefab.transform,obj.transform,"",list);
             return list;
         }
@@ -95,43 +111,64 @@ namespace Orbit_Us
         private void ApplyArticulation(RemoteEnemy remote,bool snap)
         {
             var root=remote.GameObject.transform;
+            bool changed=snap || remote.AppliedNodes!=remote.Nodes;
+            remote.AppliedNodes=remote.Nodes;
+            if(changed && remote.Nodes.Count==0 && prefabs.TryGetValue(remote.PrefabType,out GameObject basePrefab))
+            {
+                root.localScale=basePrefab.transform.localScale;
+                var original=basePrefab.GetComponent<health>();
+                if(remote.Health!=null && original!=null)remote.Health.hpMax=original.hpMax;
+            }
             if(articulationSprites.Count==0)foreach(var sprite in Resources.FindObjectsOfTypeAll<Sprite>())if(sprite!=null)articulationSprites[sprite.name]=sprite;
             float alpha=snap?1:Mathf.Clamp01(20*Time.deltaTime);
-            var seen=new HashSet<string>();
+            var seen=changed?new HashSet<string>():null;
             foreach(var n in remote.Nodes)
             {
-                seen.Add(n.Path);
-                var t=NodeAt(root,n.Path);if(t==null)continue;
+                if(changed)seen.Add(n.Path);
+                if(!remote.RenderedNodes.TryGetValue(n.Path,out RenderedNode cached))
+                {
+                    var target=NodeAt(root,n.Path);if(target==null)continue;
+                    cached=new RenderedNode {Transform=target,Sprite=target.GetComponent<SpriteRenderer>(),Health=target.GetComponent<health>(),Line=target.GetComponent<LineRenderer>()};
+                    remote.RenderedNodes.Add(n.Path,cached);
+                }
+                var t=cached.Transform;if(t==null)continue;
                 if(t!=root)
                 {
                     t.localPosition=Vector3.Lerp(t.localPosition,new Vector3(n.X,n.Y,n.Z),alpha);
                     t.localRotation=Quaternion.Slerp(t.localRotation,Quaternion.Euler(0,0,n.Rotation),alpha);
                 }
-                t.localScale=new Vector3(n.ScaleX,n.ScaleY,n.ScaleZ);t.gameObject.SetActive(n.Active);
-                var sr=t.GetComponent<SpriteRenderer>();
-                if(sr!=null)
+                if(changed){t.localScale=new Vector3(n.ScaleX,n.ScaleY,n.ScaleZ);t.gameObject.SetActive(n.Active);}
+                var sr=cached.Sprite;
+                if(changed && sr!=null)
                 {
                     sr.enabled=n.RendererEnabled;sr.color=new Color(n.R,n.G,n.B,n.A);
                     if(n.Sprite=="")sr.sprite=null;
                     else if((sr.sprite==null || sr.sprite.name!=n.Sprite) && articulationSprites.TryGetValue(n.Sprite,out Sprite sprite))sr.sprite=sprite;
                 }
-                var line=t.GetComponent<LineRenderer>();
+                var line=cached.Line;
                 if(line!=null && n.LinePoints.Count>0)
                 {
-                    line.useWorldSpace=true;line.positionCount=n.LinePoints.Count/3;
+                    if(changed){line.useWorldSpace=true;line.positionCount=n.LinePoints.Count/3;}
                     for(int i=0;i<line.positionCount;i++)line.SetPosition(i,root.TransformPoint(new Vector3(n.LinePoints[i*3],n.LinePoints[i*3+1],n.LinePoints[i*3+2])));
                 }
-                var h=t.GetComponent<health>();
+                var h=cached.Health;
                 if(h!=null)
                 {
                     if(t!=root && n.HealthId>0)
                     {
-                        CaptureChildDamage(h);remoteChildHealth[h]=new ChildHealth {Id=n.HealthId,HP=n.HP,MaxHP=n.MaxHP};h.hp=n.HP;
+                        CaptureChildDamage(h);
+                        if(changed){remoteChildHealth[h]=new ChildHealth {Id=n.HealthId,HP=n.HP,MaxHP=n.MaxHP};h.hp=n.HP;}
                     }
-                    h.hpMax=n.MaxHP;h.dead=false;
+                    if(changed){h.hpMax=n.MaxHP;h.dead=false;}
                 }
             }
-            if(remote.Nodes.Count>0 && prefabs.TryGetValue(remote.PrefabType,out GameObject template))HideRemovedNodes(root,template.transform,"",seen);
+            // A normal enemy's optional root-only metadata does not describe its
+            // children. Its floating bar must remain active and update locally.
+            if(changed)
+            {
+                bool fullHierarchy=HasBossAncestor(root) || root.GetComponent<plantFoot>()!=null || root.GetComponent<wormPart>()!=null;
+                if(fullHierarchy && remote.Nodes.Count>0 && prefabs.TryGetValue(remote.PrefabType,out GameObject template))HideRemovedNodes(root,template.transform,"",seen);
+            }
         }
         private static void HideRemovedNodes(Transform root,Transform template,string path,HashSet<string> seen)
         {

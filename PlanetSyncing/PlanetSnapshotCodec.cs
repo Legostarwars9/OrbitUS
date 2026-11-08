@@ -8,6 +8,7 @@ namespace Orbit_Us
     public sealed class PlanetState
     {
         public int Id, PrefabKey, ParentId;
+        public int SupernovaSeconds;
         public string Name = "", Tag = "";
         public bool Active, CentralBlackHole, IsBlackHole, MainSequence, PostMainSequence, HasBoss;
         public float X, Y, Rotation, ScaleX = 1f, ScaleY = 1f, Mass = 1f;
@@ -37,7 +38,7 @@ namespace Orbit_Us
     // Only a completely validated world may cause spawning or removal.
     public static class PlanetSnapshotCodec
     {
-        private const int Version = 1;
+        private const int Version = 2;
         private const int HeaderBytes = 20;
         private const int ChunkBytes = 1080;
         private const int MaxStringBytes = 256;
@@ -111,6 +112,7 @@ namespace Orbit_Us
             writer.Write(p.X); writer.Write(p.Y); writer.Write(p.Rotation);
             writer.Write(p.ScaleX); writer.Write(p.ScaleY); writer.Write(p.Mass);
             writer.Write(p.VelocityX); writer.Write(p.VelocityY); writer.Write(p.AngularVelocity); writer.Write(p.Heat);
+            writer.Write(p.SupernovaSeconds);
             writer.Write(p.Visuals.Count);
             foreach (var visual in p.Visuals)
             {
@@ -141,7 +143,7 @@ namespace Orbit_Us
                 X = reader.ReadSingle(), Y = reader.ReadSingle(), Rotation = reader.ReadSingle(),
                 ScaleX = reader.ReadSingle(), ScaleY = reader.ReadSingle(), Mass = reader.ReadSingle(),
                 VelocityX = reader.ReadSingle(), VelocityY = reader.ReadSingle(), AngularVelocity = reader.ReadSingle(),
-                Heat = reader.ReadSingle()
+                Heat = reader.ReadSingle(),SupernovaSeconds=reader.ReadInt32()
             };
             int visuals = ReadCount(reader, MaxChildren);
             for (int i = 0; i < visuals; i++)
@@ -204,7 +206,7 @@ namespace Orbit_Us
             if (p == null || p.Id <= 0 || p.ParentId < 0 || p.ParentId == p.Id ||
                 p.Visuals == null || p.Visuals.Count > MaxChildren || p.Shops == null || p.Shops.Count > MaxChildren ||
                 !Finite(p.X, p.Y, p.Rotation, p.ScaleX, p.ScaleY, p.Mass, p.VelocityX, p.VelocityY, p.AngularVelocity, p.Heat) ||
-                p.Mass <= 0f)
+                p.Mass <= 0f || p.SupernovaSeconds<0 || p.SupernovaSeconds>=10)
                 throw new InvalidDataException("Invalid planet state.");
             var paths = new HashSet<string>();
             foreach (var visual in p.Visuals)

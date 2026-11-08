@@ -12,6 +12,7 @@ namespace Orbit_Us
         private int localPlayerId = -1;
         private readonly HostRecallState hostRecall=new HostRecallState();
         private GUIStyle recallStyle;
+        private GUISkin recallSkin;
         private readonly PlayerNameplates nameplates=new PlayerNameplates();
         private readonly TaskTeleportQueue taskTeleports=new TaskTeleportQueue();
         private readonly TaskTeleportReceiver taskTeleportReceiver=new TaskTeleportReceiver();
@@ -21,10 +22,13 @@ namespace Orbit_Us
         public SpectatorRoster Spectators {get;}=new SpectatorRoster();
         private readonly HashSet<int> motionLife=new HashSet<int>();
         private readonly Dictionary<int,Vector2> remoteVelocities=new Dictionary<int,Vector2>();
-        private int remoteHost;
+        private readonly Dictionary<int,MotionInterpolation> playerMotion=new Dictionary<int,MotionInterpolation>();
+        private readonly Dictionary<int,RemoteMotionClock> playerClocks=new Dictionary<int,RemoteMotionClock>();
         private readonly TeamWipeState teamWipe=new TeamWipeState();
         private System.Threading.Tasks.Task wipeAck;
         private float wipeRetry;
+        private float nextVitalsSend;
+        private bool? lastPublishedAlive;
         public bool RunEnded=>teamWipe.Ended;
 
         private readonly Dictionary<int, GameObject> remotePlayers =
@@ -203,6 +207,12 @@ namespace Orbit_Us
 
             if(!connection.HostConnection)hostRecall.Observe(transform,Time.unscaledTime);
             if(RunEnded)return;
+            if(!playerMotion.TryGetValue(transform.PlayerId,out MotionInterpolation motion))
+            {motion=new MotionInterpolation();playerMotion.Add(transform.PlayerId,motion);playerClocks.Add(transform.PlayerId,new RemoteMotionClock());}
+            double arrived=packet.ReceivedAt>0?packet.ReceivedAt:NetworkTime.Now,stamp=transform.HasSampleTime?transform.SampleTime:arrived;
+            playerClocks[transform.PlayerId].Observe(stamp,arrived);
+            motion.Add(transform.Sequence,stamp,arrived,new MotionPose {X=transform.X,Y=transform.Y,Rotation=transform.Rotation,
+                VX=transform.VX*transform.TimeScale,VY=transform.VY*transform.TimeScale});
 
             if (!remotePlayers.ContainsKey(
                     transform.PlayerId))
@@ -226,7 +236,6 @@ namespace Orbit_Us
             ] =
                 transform.Rotation;
             remoteVelocities[transform.PlayerId]=new Vector2(transform.VX,transform.VY);
-            if(transform.IsHost)remoteHost=transform.PlayerId;
             if(transform.HasLifeState)
             {motionLife.Add(transform.PlayerId);ObserveRemoteLife(transform.PlayerId,transform.Alive);}
             else if(!motionLife.Contains(transform.PlayerId))ObserveRemoteLife(transform.PlayerId,true);
@@ -285,11 +294,11 @@ namespace Orbit_Us
             int playerId)
         {
             hostRecall.Remove(playerId);
+            playerMotion.Remove(playerId);playerClocks.Remove(playerId);
             nameplates.Remove(playerId);
             taskTeleports.Remove(playerId);
             Spectators.Remove(playerId);motionLife.Remove(playerId);remoteVelocities.Remove(playerId);
             teamWipe.Acknowledge(playerId);
-            if(remoteHost==playerId)remoteHost=0;
             GameObject remotePlayer;
 
             if (remotePlayers.TryGetValue(
@@ -353,6 +362,13 @@ namespace Orbit_Us
                     continue;
                 }
 
+                if(playerMotion.TryGetValue(playerId,out MotionInterpolation motion) &&
+                    motion.Evaluate(playerClocks[playerId].SourceTime(NetworkTime.Now)-.05,out MotionPose pose))
+                {
+                    player.transform.position=new Vector3(pose.X,pose.Y,player.transform.position.z);
+                    player.transform.rotation=Quaternion.Euler(0,0,pose.Rotation);
+                    continue;
+                }
                 Vector3 targetPosition =
                     targetPositions[
                         playerId
@@ -419,7 +435,7 @@ namespace Orbit_Us
         {
             var local=global::player.Instance;
             if(connection.HostConnection || !connection.IsConnected || Time.unscaledTime<taskRecallGrace || local==null || local.dead ||
-                !local.gameObject.activeInHierarchy || local.rb==null)
+                !local.gameObject.activeInHierarchy || local.rb==null || hostRecall.TargetPlayerId==connection.LocalPlayerId)
             {hostRecall.CancelCountdown();return;}
             if(!hostRecall.TryRecall(local.rb.position.x,local.rb.position.y,Time.unscaledTime,out PlayerTransformData destination))return;
             local.rb.position=new Vector2(destination.X,destination.Y);
@@ -454,10 +470,17 @@ namespace Orbit_Us
             var local=global::player.Instance;
             if(!connection.IsConnected || local==null || local.rb==null || !local.gameObject.activeInHierarchy)return System.Threading.Tasks.Task.CompletedTask;
             bool alive=!local.dead && !Life.IsSpectating;
-            Vector2 position=Life.IsSpectating?Life.DeathPosition:(Vector2)local.transform.position;
+            bool vitals=Time.unscaledTime>=nextVitalsSend || lastPublishedAlive!=alive;
+            if(vitals)nextVitalsSend=Time.unscaledTime+.25f;
+            lastPublishedAlive=alive;
+            Vector2 position=Life.IsSpectating?Life.DeathPosition:local.rb.position;
             Vector2 velocity=alive?local.rb.velocity:Vector2.zero;
-            return connection.SendPlayerVitals(position.x,position.y,local.transform.eulerAngles.z,velocity.x,velocity.y,alive,
-                alive?Mathf.Clamp(local.hp,0,local.hpMax):0,local.hpMax,Mathf.Clamp(local.fuel,0,local.fuelCap),local.fuelCap);
+            int spectating=connection.HostConnection && !alive && Life.IsSpectating && SpectatorTarget()!=null?Spectators.TargetId:0;
+            return connection.SendPlayerState(new PlayerTransformData {X=position.x,Y=position.y,Rotation=local.rb.rotation,
+                HasSampleTime=true,SampleTime=NetworkTime.PhysicsSample(Math.Min(Time.fixedDeltaTime,Time.timeAsDouble-Time.fixedTimeAsDouble),Time.timeScale),
+                VX=velocity.x,VY=velocity.y,TimeScale=Time.timeScale,HasVelocity=true,HasLifeState=true,Alive=alive,SpectatingPlayerId=spectating,
+                HasVitals=vitals,Health=alive?Mathf.Clamp(local.hp,0,local.hpMax):0,MaxHealth=local.hpMax,
+                Fuel=Mathf.Clamp(local.fuel,0,local.fuelCap),MaxFuel=local.fuelCap});
         }
         public Transform SpectatorTarget()
         {
@@ -465,7 +488,13 @@ namespace Orbit_Us
             return remotePlayers.TryGetValue(id,out GameObject model) && model!=null && model.activeInHierarchy?model.transform:null;
         }
         public Vector2 RemoteVelocity(int id)=>remoteVelocities.TryGetValue(id,out Vector2 velocity)?velocity:Vector2.zero;
-        public string PlayerLabel(int id)=>connection.GetPlayerName(id)+(id==remoteHost?" (Host)":"");
+        public bool TryGetRemotePosition(int id,out Vector3 position)
+        {
+            position=Vector3.zero;
+            if(!remotePlayers.TryGetValue(id,out GameObject model) || model==null || !model.activeInHierarchy)return false;
+            position=model.transform.position;return true;
+        }
+        public string PlayerLabel(int id)=>connection.GetPlayerName(id);
         public void LateUpdate()=>Life.LateUpdate();
         public void DrawSpectator()=>Life.Draw();
         public bool FinishWipeDelivery()
@@ -480,8 +509,25 @@ namespace Orbit_Us
         public void DrawRecallCountdown()
         {
             if(connection.HostConnection || !connection.IsConnected || hostRecall.SecondsRemaining<=0)return;
-            if(recallStyle==null)recallStyle=new GUIStyle(GUI.skin.box) {fontSize=20,fontStyle=FontStyle.Bold,alignment=TextAnchor.MiddleCenter};
-            GUI.Box(new Rect((Screen.width-360)/2f,60,360,48),"Teleporting to Host in "+hostRecall.SecondsRemaining+"s",recallStyle);
+            GUISkin previousSkin=GUI.skin;Matrix4x4 matrix=GUI.matrix;Color color=GUI.color;
+            try
+            {
+                GUI.skin=GameMenuTheme.Skin;GUI.color=Color.white;
+                if(recallSkin!=GUI.skin || recallStyle==null)
+                {
+                    recallSkin=GUI.skin;
+                    recallStyle=new GUIStyle(GUI.skin.label) {fontSize=20,fontStyle=GUI.skin.button.fontStyle,alignment=TextAnchor.MiddleCenter};
+                }
+                float scale=Mathf.Clamp(Mathf.Min(Screen.width/900f,Screen.height/640f),.5f,1.5f);
+                GUI.matrix=Matrix4x4.Scale(new Vector3(scale,scale,1));
+                string target=hostRecall.FollowingSpectator?connection.GetPlayerName(hostRecall.TargetPlayerId):"Host";
+                string caption="Teleporting to "+target+" in "+hostRecall.SecondsRemaining+"s";
+                float width=Mathf.Min(Mathf.Max(360,recallStyle.CalcSize(new GUIContent(caption)).x+24),Screen.width/scale-32);
+                Rect panel=new Rect((Screen.width/scale-width)/2f,60,width,48);
+                GameMenuTheme.Panel(panel);
+                GUI.Label(new Rect(panel.x+12,panel.y,panel.width-24,panel.height),caption,recallStyle);
+            }
+            finally{GUI.skin=previousSkin;GUI.matrix=matrix;GUI.color=color;}
         }
 
         public void Destroy()
@@ -512,7 +558,8 @@ namespace Orbit_Us
             localPlayerId = -1;
             hostRecall.Clear();
             nameplates.Clear();
-            Spectators.Clear();motionLife.Clear();remoteVelocities.Clear();remoteHost=0;
+            Spectators.Clear();motionLife.Clear();remoteVelocities.Clear();
+            playerMotion.Clear();playerClocks.Clear();
             taskTeleports.Clear();taskTeleportReceiver.Clear();taskRetryTimer=taskRecallGrace=0;
             if(Instance==this)Instance=null;
         }

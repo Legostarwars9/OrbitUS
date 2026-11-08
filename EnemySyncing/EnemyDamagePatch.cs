@@ -6,6 +6,27 @@ using HarmonyLib;
 namespace Orbit_Us
 {
     [HarmonyPatch]
+    public static class MateriaphageProjectileFeedingPatch
+    {
+        public static IEnumerable<MethodBase> TargetMethods()
+        {
+            // matBoss inherits these private Unity callbacks from its controller.
+            yield return AccessTools.DeclaredMethod(typeof(materiaphageController), "OnCollisionEnter2D");
+            yield return AccessTools.DeclaredMethod(typeof(materiaphageController), "OnCollisionStay2D");
+        }
+
+        public static bool Prefix(materiaphageController __instance, UnityEngine.Collision2D __0)
+        {
+            if (!OrbitUs.MultiplayerActive || !(__instance is matBoss) || __0 == null)
+                return true;
+            var shot = __0.gameObject.GetComponentInParent<projectile>();
+            // health's trigger still applies the hit. Consuming the same shot
+            // would heal 50 HP and erase the damage from ordinary weapons.
+            return shot == null || !shot.playerSafe || !(shot.damage > 0f);
+        }
+    }
+
+    [HarmonyPatch]
     public static class RemoteEnemyDeathPatch
     {
         public static IEnumerable<MethodBase> TargetMethods()

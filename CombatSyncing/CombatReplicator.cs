@@ -11,7 +11,7 @@ namespace Orbit_Us
         private sealed class Drop
         {public item Source;public CombatEntityState State;public float Expires;}
         private sealed class Replica
-        {public GameObject Object;public CombatEntityState State;public float Received,Sampled;public bool Ending;}
+        {public GameObject Object;public CombatEntityState State;public float Received;public bool Ending;public readonly MotionInterpolation Motion=new MotionInterpolation();}
         private readonly NetworkUDPConnection connection;
         private readonly bool host;
         private readonly Dictionary<projectile,Shot> shots=new Dictionary<projectile,Shot>();
@@ -139,7 +139,7 @@ namespace Orbit_Us
         {
             if(!initialized)return;
             scanTimer+=Time.unscaledDeltaTime;
-            if(scanTimer>=1){scanTimer=0;RefreshCatalog();}
+            if(scanTimer>=5){scanTimer=0;RefreshCatalog();}
             Pilots.Update();
             foreach(var pair in new List<KeyValuePair<long,Replica>>(replicas))
             {
@@ -149,8 +149,8 @@ namespace Orbit_Us
                 {
                     if((r.Ending && Time.unscaledTime-r.Received>0.08f) || Time.unscaledTime-r.Received>2f)
                     {if(r.Ending)claimed.Add(pair.Key);RemoveReplica(pair.Key);continue;}
-                    float age=Mathf.Min(Time.time-r.Sampled,0.2f);
-                    r.Object.transform.position=new Vector3(r.State.X+r.State.VX*Mathf.Max(age,0),r.State.Y+r.State.VY*Mathf.Max(age,0),0);
+                    if(r.Motion.Evaluate(NetworkTime.Now-.05,out MotionPose pose))
+                    {r.Object.transform.position=new Vector3(pose.X,pose.Y,0);r.Object.transform.rotation=Quaternion.Euler(0,0,pose.Rotation);}
                 }
             }
             hitTimer+=Time.unscaledDeltaTime;
@@ -171,6 +171,9 @@ namespace Orbit_Us
         public void LateUpdate()
         {
             if(!initialized)return;
+            timer+=Time.unscaledDeltaTime;
+            if(timer<.1f || sending || connection.LocalPlayerId<=0)return;
+            timer%=.1f;
             foreach(var pair in new List<KeyValuePair<projectile,Shot>>(shots))
             {
                 var shot=pair.Value;
@@ -187,9 +190,10 @@ namespace Orbit_Us
                     if(drops[key].Source!=null)UnityEngine.Object.Destroy(drops[key].Source.gameObject);
                     drops.Remove(key);
                 }
-            timer+=Time.unscaledDeltaTime;
-            if(timer>=0.1f && !sending && connection.LocalPlayerId>0){timer=0;Send();}
+            Send();
         }
+        public void CaptureProjectileImpact(projectile source)
+        {if(source!=null && shots.TryGetValue(source,out Shot shot))CaptureShot(shot);}
         private async void Send()
         {
             sending=true;
@@ -264,12 +268,14 @@ namespace Orbit_Us
                 _=connection.SendCombatHitAck(hit.Id);return;
             }
             if(packet.Type!=PacketType.CombatSnapshot)return;
+            if(packet.SnapshotValidated && packet.Decoded==null)return;
             int owner=CombatSnapshotCodec.ReadOwner(packet.Data);
             if(owner==connection.LocalPlayerId || owner<=0)return;
             if(!incoming.TryGetValue(owner,out CombatSnapshotCodec.Assembler assembler))
             {assembler=new CombatSnapshotCodec.Assembler();incoming.Add(owner,assembler);}
-            if(assembler.TryAdd(packet.Data,out CombatFrame frame))
-            {Pilots.Presence(owner,frame.Alive);PlayerReplicator.Instance?.ObserveCombatLife(owner,frame.Alive);ownerSeen[owner]=Time.unscaledTime;Apply(frame);}
+            var frame=packet.Decoded as CombatFrame;
+            if(frame==null && (packet.SnapshotValidated || !assembler.TryAdd(packet.Data,out frame)))return;
+            Pilots.Presence(owner,frame.Alive);PlayerReplicator.Instance?.ObserveCombatLife(owner,frame.Alive);ownerSeen[owner]=Time.unscaledTime;Apply(frame);
         }
         private void Apply(CombatFrame frame)
         {
@@ -312,9 +318,13 @@ namespace Orbit_Us
                 }
                 replica.State=state;
                 if(state.Kind>0)continue; // resource copies chase and collect independently on each peer
-                replica.Received=Time.unscaledTime;replica.Sampled=Time.time;replica.Ending=state.Ended;
+                replica.Received=Time.unscaledTime;replica.Ending=state.Ended;
                 var go=replica.Object;
-                go.transform.position=new Vector3(state.X,state.Y,0);go.transform.rotation=Quaternion.Euler(0,0,state.Rotation);
+                if(!state.Ended)
+                {
+                    double now=NetworkTime.Now;
+                    replica.Motion.Add((uint)frame.Sequence,now,now,new MotionPose {X=state.X,Y=state.Y,Rotation=state.Rotation,VX=state.VX*Time.timeScale,VY=state.VY*Time.timeScale});
+                }
                 go.transform.localScale=new Vector3(state.ScaleX,state.ScaleY,1);
                 var visualBody=go.GetComponent<Rigidbody2D>();if(visualBody!=null)visualBody.velocity=new Vector2(state.VX,state.VY);
                 var defense=go.GetComponent<RemoteDefenseProxy>();

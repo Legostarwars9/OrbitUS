@@ -6,6 +6,8 @@ namespace Orbit_Us
 {
     public partial class EnemyReplicator
     {
+        private sealed class RenderedNode
+        {public Transform Transform;public SpriteRenderer Sprite;public health Health;public LineRenderer Line;}
         private class RemoteEnemy
         {
             public GameObject GameObject;
@@ -16,6 +18,8 @@ namespace Orbit_Us
             public float TargetHeadHP;
             public int MissingSnapshots,PrefabType;
             public List<EnemyNodePose> Nodes=new List<EnemyNodePose>();
+            public List<EnemyNodePose> AppliedNodes;
+            public readonly Dictionary<string,RenderedNode> RenderedNodes=new Dictionary<string,RenderedNode>();
         }
 
         private readonly NetworkUDPConnection connection;
@@ -25,6 +29,12 @@ namespace Orbit_Us
         private readonly Dictionary<enemy, int> hostEnemies = new Dictionary<enemy, int>();
         private readonly Dictionary<int, enemy> hostEnemiesById = new Dictionary<int, enemy>();
         private readonly Dictionary<int, GameObject> prefabs = new Dictionary<int, GameObject>();
+        private sealed class HostMotionTarget {public GameObject Object;public Rigidbody2D Body;public health Health;public Vector2 Previous;public double Time;}
+        private readonly Dictionary<int,HostMotionTarget> motionTargets=new Dictionary<int,HostMotionTarget>();
+        private readonly WorldMotionSender motionSender=new WorldMotionSender();
+        private readonly WorldMotionStream motionStream=new WorldMotionStream();
+        private float motionTimer,cleanupTimer;
+        private uint motionSequence;
         private readonly Dictionary<string, int> prefabTypes = new Dictionary<string, int>(StringComparer.Ordinal);
         private readonly HashSet<string> unknownPrefabs = new HashSet<string>();
         private readonly Dictionary<int, DamageRequestHistory> damageHistory = new Dictionary<int, DamageRequestHistory>();
@@ -37,6 +47,7 @@ namespace Orbit_Us
         private float retryTimer;
         private float snapshotInterval = SendRate;
         private float catalogTimer;
+        private float nextPrefabScan;
         private bool initialized;
         private bool sendingSnapshot;
         private GameObject stagingRoot;
@@ -73,7 +84,9 @@ namespace Orbit_Us
 
             if (isHost)
             {
-                sendTimer += Time.deltaTime;
+                motionTimer+=Time.unscaledDeltaTime;
+                if(motionTimer>=.05f){motionTimer%=.05f;SendMotion();}
+                sendTimer += Time.unscaledDeltaTime;
                 if (sendTimer >= snapshotInterval && !sendingSnapshot)
                 {
                     sendTimer = 0f;
@@ -83,8 +96,12 @@ namespace Orbit_Us
             else
             {
                 if (waveManager != null) waveManager.StopAllCoroutines();
-                RemoveUnauthorizedClientEnemies();
-                RemoveUnauthorizedParts();
+                cleanupTimer+=Time.unscaledDeltaTime;
+                if(cleanupTimer>=.25f)
+                {
+                    cleanupTimer=0;RemoveUnauthorizedClientEnemies();RemoveUnauthorizedParts();
+                    foreach(var h in new List<health>(remoteChildHealth.Keys))if(h==null)remoteChildHealth.Remove(h);
+                }
                 UpdateRemoteEnemies();
                 retryTimer += Time.unscaledDeltaTime;
                 if (retryTimer >= 0.2f)
@@ -100,7 +117,9 @@ namespace Orbit_Us
 
         private void RefreshPrefabCatalog()
         {
-            waveManager = UnityEngine.Object.FindObjectOfType<waveManager>();
+            if(waveManager==null)waveManager=UnityEngine.Object.FindObjectOfType<waveManager>();
+            if(prefabs.Count>0 && Time.unscaledTime<nextPrefabScan)return;
+            nextPrefabScan=Time.unscaledTime+10;
             // Include locked enemies and nested/body prefabs independently of the
             // randomly changing wave pools on each machine. Never use live clones.
             foreach (var prefab in Resources.FindObjectsOfTypeAll<GameObject>())
@@ -157,7 +176,11 @@ namespace Orbit_Us
                 match = pair.Key;
             }
             if (match < 0 && unknownPrefabs.Add(name))
+            {
+                nextPrefabScan=0;RefreshPrefabCatalog();
+                if(prefabTypes.TryGetValue(name,out int loaded))return loaded;
                 Debug.LogWarning($"[Orbit-Us] Cannot identify enemy prefab '{name}'; skipping replication.");
+            }
             return match;
         }
 
@@ -217,6 +240,7 @@ namespace Orbit_Us
                     var h = current.GetComponent<health>();
                     int type = GetEnemyType(current.gameObject);
                     if (type < 0 || (h != null && h.dead)) continue;
+                    RegisterMotionTarget(current.gameObject,id);
                     var w = h as worm;
                     snapshot.Add(new EnemyTransformData
                     {
@@ -233,13 +257,14 @@ namespace Orbit_Us
                     if (currentEnemies.Contains(pair.Key)) continue;
                     hostEnemies.Remove(pair.Key);
                     hostEnemiesById.Remove(pair.Value);
+                    motionTargets.Remove(pair.Value);motionSender.Remove(pair.Value);
                 }
                 AppendDetachedParts(snapshot,currentEnemies);
-                // Target at most 200 snapshot datagrams/sec before relay fan-out.
-                // Large waves trade update frequency for bounded traffic.
+                // Large topology snapshots yield to the independent motion stream.
+                // The shared bulk budget measures actual compressed wire bytes.
                 int poseBytes=snapshot.Count*32;
                 foreach(var data in snapshot)poseBytes+=data.Nodes.Count*140;
-                snapshotInterval = Mathf.Max(SendRate,poseBytes/200000f);
+                snapshotInterval = Mathf.Clamp(poseBytes/500000f,SendRate,.5f);
                 await connection.SendEnemySnapshot(snapshot, nextSnapshotId++);
             }
             catch (Exception ex) { Debug.LogError($"[Orbit-Us] Enemy snapshot send failed: {ex}"); }
@@ -251,6 +276,15 @@ namespace Orbit_Us
             if (!initialized) return;
             try
             {
+                if(packet.Type==PacketType.EnemyMotion && !isHost)
+                {
+                    var batch=packet.Decoded as WorldMotionBatch;
+                    if(batch==null && !WorldMotionCodec.TryDecode(packet.Data,out batch))return;
+                    motionStream.Observe(batch,packet.ReceivedAt>0?packet.ReceivedAt:NetworkTime.Now);
+                    foreach(var e in batch.Entities)if(remoteEnemies.TryGetValue(e.Id,out RemoteEnemy remote) && motionStream.Latest(e.Id,out WorldMotion latest))
+                    {CaptureRemoteDamage(remote.Health);remote.TargetHP=latest.HP;remote.TargetHeadHP=latest.HeadHP;RestoreHealth(remote);}
+                    return;
+                }
                 if (packet.Type == PacketType.EnemyDamage && isHost)
                     HandleEnemyDamage(packet);
                 else if (packet.Type == PacketType.EnemyDamageAck && !isHost)
@@ -258,9 +292,10 @@ namespace Orbit_Us
                     if (packet.Data.Length == 8 && BitConverter.ToInt32(packet.Data, 0) == connection.LocalPlayerId)
                         pendingDamage.Remove(BitConverter.ToInt32(packet.Data, 4));
                 }
-                else if (packet.Type == PacketType.EnemySnapshot && !isHost &&
-                         snapshots.TryAdd(packet.Data, out List<EnemyTransformData> snapshot))
+                else if (packet.Type == PacketType.EnemySnapshot && !isHost)
                 {
+                    var snapshot=packet.Decoded as List<EnemyTransformData>;
+                    if(snapshot==null && (packet.SnapshotValidated || !snapshots.TryAdd(packet.Data,out snapshot)))return;
                     var receivedIds = new HashSet<int>();
                     foreach (var data in snapshot)
                     {
@@ -280,6 +315,8 @@ namespace Orbit_Us
 
         private void UpdateRemoteEnemy(EnemyTransformData data)
         {
+            if(motionStream.Latest(data.EnemyId,out WorldMotion latest))
+            {data.X=latest.X;data.Y=latest.Y;data.Rotation=latest.Rotation;data.HP=latest.HP;data.HeadHP=latest.HeadHP;}
             if (!remoteEnemies.TryGetValue(data.EnemyId, out RemoteEnemy remote) || remote.GameObject == null)
             {
                 if (remote != null && !ReferenceEquals(remote.GameObject, null))
@@ -420,7 +457,7 @@ namespace Orbit_Us
             // temperature splitting and physics. Health must still receive hits.
             foreach (var behaviour in spawned.GetComponentsInChildren<MonoBehaviour>(true))
             {
-                if (behaviour == null || behaviour is health || behaviour is enemy) continue;
+                if (behaviour == null || behaviour is health || behaviour is enemy || behaviour is floatingHealthBar) continue;
                 behaviour.StopAllCoroutines();
                 behaviour.enabled = false;
             }
@@ -444,22 +481,28 @@ namespace Orbit_Us
 
         private void UpdateRemoteEnemies()
         {
-            foreach(var h in new List<health>(remoteChildHealth.Keys))if(h==null)remoteChildHealth.Remove(h);
+            double now=NetworkTime.Now;
             foreach (var remote in remoteEnemies.Values)
             {
                 if (remote.GameObject == null) continue;
                 CaptureRemoteDamage(remote.Health);
                 var transform = remote.GameObject.transform;
+                if(motionStream.Sample(remoteIds[remote.GameObject],now,out MotionPose pose))
+                {transform.position=new Vector3(pose.X,pose.Y,transform.position.z);transform.rotation=Quaternion.Euler(0,0,pose.Rotation);}
+                else
+                {
                 transform.position = Vector3.Lerp(transform.position,
                     new Vector3(remote.TargetPosition.x, remote.TargetPosition.y, transform.position.z), 20f * Time.deltaTime);
                 transform.rotation = Quaternion.Lerp(transform.rotation,
                     Quaternion.Euler(0f, 0f, remote.TargetRotation), 20f * Time.deltaTime);
+                }
                 ApplyArticulation(remote,false);
             }
         }
 
         private void RemoveRemoteEnemy(int enemyId)
         {
+            motionStream.Remove(enemyId);
             if (!remoteEnemies.TryGetValue(enemyId, out RemoteEnemy remote)) return;
             if(remote.GameObject!=null)foreach(var h in remote.GameObject.GetComponentsInChildren<health>(true))remoteChildHealth.Remove(h);
             if (!ReferenceEquals(remote.GameObject, null)) remoteIds.Remove(remote.GameObject);
@@ -497,10 +540,33 @@ namespace Orbit_Us
             foreach (int id in new List<int>(remoteEnemies.Keys)) RemoveRemoteEnemy(id);
             if (stagingRoot != null) UnityEngine.Object.Destroy(stagingRoot);
             hostEnemies.Clear();
+            motionTargets.Clear();motionSender.Clear();motionStream.Clear();
             hostEnemiesById.Clear();extraHealthIds.Clear();extraHealthById.Clear();extraVisualPartIds.Clear();remoteChildHealth.Clear();
             pendingDamage.Clear();
             damageHistory.Clear();
             if (Instance == this) Instance = null;
+        }
+
+        private void RegisterMotionTarget(GameObject obj,int id)
+        {
+            if(!motionTargets.ContainsKey(id))motionTargets.Add(id,new HostMotionTarget {Object=obj,Body=obj.GetComponent<Rigidbody2D>(),Health=obj.GetComponent<health>(),Previous=obj.transform.position,Time=NetworkTime.Now});
+        }
+        private void SendMotion()
+        {
+            double now=NetworkTime.PhysicsSample(Math.Min(Time.fixedDeltaTime,Time.timeAsDouble-Time.fixedTimeAsDouble),Time.timeScale);
+            var batch=new WorldMotionBatch {Sequence=++motionSequence,Time=now,TimeScale=Time.timeScale};
+            foreach(var pair in motionTargets)
+            {
+                var t=pair.Value;if(t.Object==null || !t.Object.activeInHierarchy || (t.Health!=null && t.Health.dead))continue;
+                Vector2 position=t.Body!=null?t.Body.position:(Vector2)t.Object.transform.position;
+                Vector2 velocity=t.Body!=null?t.Body.velocity:now>t.Time?(position-t.Previous)/(float)(now-t.Time):Vector2.zero;
+                t.Previous=position;t.Time=now;
+                var worm=t.Health as worm;
+                var pose=new WorldMotion {Id=pair.Key,X=position.x,Y=position.y,VX=velocity.x,VY=velocity.y,Rotation=t.Body!=null?t.Body.rotation:t.Object.transform.eulerAngles.z,
+                    AngularVelocity=t.Body!=null?t.Body.angularVelocity:0,HP=t.Health!=null?t.Health.hp:0,HeadHP=worm!=null?worm.headHp:0};
+                if(motionSender.Changed(pose,now,batch.TimeScale))batch.Entities.Add(pose);
+            }
+            _=connection.SendWorldMotion(batch);
         }
     }
 }

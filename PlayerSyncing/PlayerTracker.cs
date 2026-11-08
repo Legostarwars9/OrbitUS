@@ -24,6 +24,8 @@ namespace Orbit_Us
             new Dictionary<int, Text>();
 
         private Text distanceList;
+        private float nextDistanceUpdate;
+        private Font distanceFont;
 
         private const float ArrowSize = 15f;
 
@@ -446,26 +448,10 @@ namespace Orbit_Us
             if (distanceList == null)
                 return;
 
-            playerController localPlayer =
-                UnityEngine.Object.FindObjectOfType<
-                    playerController
-                >();
+            var localPlayer=global::player.Instance;
 
             if (localPlayer == null)
                 return;
-
-            foreach (Text label in distanceLabels.Values)
-            {
-                if (label != null)
-                {
-                    label.gameObject.SetActive(false);
-                    UnityEngine.Object.Destroy(
-                        label.gameObject
-                    );
-                }
-            }
-
-            distanceLabels.Clear();
 
             List<int> playerIds =
                 new List<int>(
@@ -488,34 +474,15 @@ namespace Orbit_Us
                         remotePlayer.transform.position
                     );
 
-                GameObject labelObject =
-                    new GameObject(
-                        $"OrbitUs_Distance_{playerId}"
-                    );
-
-                labelObject.transform.SetParent(
-                    distanceList.transform,
-                    false
-                );
-
-                Text label =
-                    labelObject.AddComponent<Text>();
-
-                label.font =
-                    Resources.GetBuiltinResource<Font>(
-                        "Arial.ttf"
-                    );
-
-                label.fontSize = 14;
-
-                label.alignment =
-                    TextAnchor.MiddleLeft;
-
-                label.horizontalOverflow =
-                    HorizontalWrapMode.Overflow;
-
-                label.verticalOverflow =
-                    VerticalWrapMode.Overflow;
+                if(!distanceLabels.TryGetValue(playerId,out Text label) || label==null)
+                {
+                    var created=new GameObject($"OrbitUs_Distance_{playerId}");
+                    created.transform.SetParent(distanceList.transform,false);
+                    label=created.AddComponent<Text>();distanceLabels[playerId]=label;
+                    if(distanceFont==null)distanceFont=Resources.GetBuiltinResource<Font>("Arial.ttf");
+                    label.font=distanceFont;label.fontSize=14;label.alignment=TextAnchor.MiddleLeft;
+                    label.horizontalOverflow=HorizontalWrapMode.Overflow;label.verticalOverflow=VerticalWrapMode.Overflow;
+                }
 
                 label.color =
                     GetPlayerColor(playerId);
@@ -537,7 +504,7 @@ namespace Orbit_Us
                 }
 
                 RectTransform labelTransform =
-                    labelObject.GetComponent<RectTransform>();
+                    label.rectTransform;
 
                 labelTransform.anchorMin =
                     new Vector2(0f, 1f);
@@ -560,10 +527,6 @@ namespace Orbit_Us
                         -playerIds.IndexOf(playerId) * 20f
                     );
 
-                distanceLabels.Add(
-                    playerId,
-                    label
-                );
             }
 
             distanceList.text = "";
@@ -574,10 +537,7 @@ namespace Orbit_Us
             if (canvas == null)
                 return;
 
-            playerController localPlayer =
-                UnityEngine.Object.FindObjectOfType<
-                    playerController
-                >();
+            var localPlayer=global::player.Instance;
 
             if (localPlayer == null)
                 return;
@@ -597,6 +557,8 @@ namespace Orbit_Us
 
                 if (remotePlayer == null)
                     continue;
+                if(PlayerReplicator.Instance!=null && PlayerReplicator.Instance.TryGetRemotePosition(playerId,out Vector3 rendered))
+                    remotePlayer.transform.position=rendered;
 
                 if (!arrows.ContainsKey(playerId))
                     continue;
@@ -641,7 +603,8 @@ namespace Orbit_Us
                     );
             }
 
-            UpdateDistanceList();
+            if(Time.unscaledTime>=nextDistanceUpdate)
+            {nextDistanceUpdate=Time.unscaledTime+.1f;UpdateDistanceList();}
         }
 
         public void Destroy()

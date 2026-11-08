@@ -10,11 +10,13 @@ namespace Orbit_Us
     public sealed class MultiplayerMenu : IDisposable
     {
         private readonly OrbitUs mod;
-        private string address,port,error="",matchmaking,joinCode="";
+        private string address,port,error="", joinCode="";
         private string username;
         private bool rosterOpen,direct;
         private Vector2 rosterScroll,lobbyScroll,queueScroll;
         private GUIStyle title,muted,barText;
+        private GUISkin styledSkin;
+        private Vector2 panelScroll;
         private readonly Dictionary<int,float> pendingKicks=new Dictionary<int,float>();
         private readonly Dictionary<int,float> nextKick=new Dictionary<int,float>();
         private static readonly FieldInfo MainMenuField=AccessTools.Field(typeof(startManager),"mainMenuScreen");
@@ -23,7 +25,7 @@ namespace Orbit_Us
         public static bool PointerOverPanel {get;private set;}
 
         public MultiplayerMenu(OrbitUs mod,string address,int port)
-        {this.mod=mod;this.address=address;this.port=port.ToString();matchmaking=mod.MatchmakingEndpoint;username=mod.Username;}
+        {this.mod=mod;this.address=address;this.port=port.ToString();username=mod.Username;}
 
         public bool MainMenuVisible
         {
@@ -57,39 +59,42 @@ namespace Orbit_Us
         }
         private void Styles()
         {
-            if(title!=null)return;
-            title=new GUIStyle(GUI.skin.label) {fontSize=19,fontStyle=FontStyle.Bold};
-            muted=new GUIStyle(GUI.skin.label) {wordWrap=true,fontSize=12};muted.normal.textColor=new Color(.72f,.76f,.8f);
-            barText=new GUIStyle(GUI.skin.label) {alignment=TextAnchor.MiddleCenter,fontSize=11};
+            if(styledSkin==GUI.skin && title!=null)return;
+            styledSkin=GUI.skin;
+            title=new GUIStyle(GUI.skin.label) {fontSize=20,fontStyle=GUI.skin.button.fontStyle};
+            muted=new GUIStyle(GUI.skin.label) {wordWrap=true,fontSize=12};muted.normal.textColor=GameMenuTheme.MutedColor;
+            barText=new GUIStyle(GUI.skin.label) {alignment=TextAnchor.MiddleCenter,fontSize=12};
+            barText.normal.textColor=Color.white;
         }
         public void Draw()
         {
             bool menu=MainMenuVisible;
             if(!menu && (!mod.GameplayConnected || !rosterOpen))return;
-            Styles();
+            GUISkin previousSkin=GUI.skin;
             Matrix4x4 matrix=GUI.matrix;Color color=GUI.color;int depth=GUI.depth;
             try
             {
+                GUI.skin=GameMenuTheme.Skin;Styles();
                 GUI.depth=-1000;GUI.matrix=Matrix4x4.Scale(new Vector3(Scale,Scale,1));
                 if(menu)DrawLobby();else DrawRoster();
             }
-            finally{GUI.matrix=matrix;GUI.color=color;GUI.depth=depth;}
+            finally{GUI.skin=previousSkin;GUI.matrix=matrix;GUI.color=color;GUI.depth=depth;}
         }
         private void DrawLobby()
         {
-            Rect panel=MenuRect;GUI.Box(panel,GUIContent.none);
+            Rect panel=MenuRect;GameMenuTheme.Panel(panel);
             GUILayout.BeginArea(new Rect(panel.x+16,panel.y+12,panel.width-32,panel.height-24));
+            panelScroll=GUILayout.BeginScrollView(panelScroll,GUIStyle.none,GUI.skin.verticalScrollbar);
             GUILayout.Label("Orbit Us",title);
             if(!mod.SessionActive && !mod.RoomRequested)
             {
                 GUILayout.Label("Multiplayer",muted);GUILayout.Space(8);
                 GUILayout.Label("Username");username=GUILayout.TextField(username,PlayerNames.MaxLength);
-                GUILayout.Label("Matchmaking server");matchmaking=GUILayout.TextField(matchmaking,253);
                 GUILayout.Label("Room code");joinCode=GUILayout.TextField(joinCode,11).ToUpperInvariant();
                 GUILayout.Space(8);
                 GUILayout.BeginHorizontal();
-                if(GUILayout.Button("Create room",GUILayout.Height(30))){error="";mod.Username=username;mod.BeginCodeRoom(matchmaking,"",true);}
-                if(GUILayout.Button("Join code",GUILayout.Height(30))){error="";mod.Username=username;mod.BeginCodeRoom(matchmaking,joinCode,false);}
+                if(GUILayout.Button("Create room",GUILayout.Height(30))){error="";mod.Username=username;mod.BeginCodeRoom("",true);}
+                if(GUILayout.Button("Join code",GUILayout.Height(30))){error="";mod.Username=username;mod.BeginCodeRoom(joinCode,false);}
                 GUILayout.EndHorizontal();GUILayout.Space(10);
                 direct=GUILayout.Toggle(direct,"Direct IP / VPN");
                 if(direct)
@@ -140,14 +145,14 @@ namespace Orbit_Us
                 GUILayout.EndScrollView();GUILayout.Space(10);
                 if(mod.SessionHost)
                 {
-                    bool enabled=GUI.enabled;GUI.enabled=connection.LocalPlayerId>0;
+                    bool enabled=GUI.enabled;GUI.enabled=connection.LocalPlayerId>0 && (!mod.RoomRequested || mod.Room?.Registered==true);
                     if(GUILayout.Button("Start game",GUILayout.Height(32)))mod.StartLobbyGame();
                     GUI.enabled=enabled;
                 }
                 else GUILayout.Label("Waiting for the host to start. You will join automatically.",muted);
                 if(GUILayout.Button(mod.SessionHost?"Close lobby":"Leave / cancel"))mod.LeaveSession();
             }
-            GUILayout.EndArea();
+            GUILayout.EndScrollView();GUILayout.EndArea();
         }
         private void DrawQueue()
         {
@@ -161,8 +166,8 @@ namespace Orbit_Us
                 GUILayout.BeginHorizontal();GUILayout.Label(peer.Name+" • "+peer.State,muted);
                 if(peer.Queued)
                 {
-                    if(GUILayout.Button("Accept",GUILayout.Width(52)))mod.Room.Approve(peer.Id);
-                    if(GUILayout.Button("Decline",GUILayout.Width(55)))mod.Room.Decline(peer.Id);
+                    if(GUILayout.Button("Accept",GUILayout.Width(66)))mod.Room.Approve(peer.Id);
+                    if(GUILayout.Button("Decline",GUILayout.Width(66)))mod.Room.Decline(peer.Id);
                 }
                 GUILayout.EndHorizontal();
             }
@@ -183,7 +188,7 @@ namespace Orbit_Us
 
         private void DrawRoster()
         {
-            Rect panel=RosterRect;GUI.Box(panel,GUIContent.none);
+            Rect panel=RosterRect;GameMenuTheme.Panel(panel);
             GUI.Label(new Rect(panel.x+18,panel.y+12,420,30),"Connected players",title);
             if(GUI.Button(new Rect(panel.xMax-76,panel.y+12,58,26),"Close"))rosterOpen=false;
             float x=panel.x+18,y=panel.y+50;
@@ -203,8 +208,8 @@ namespace Orbit_Us
                 GUI.Label(new Rect(0,row,206,24),Label(id));
                 GUI.Label(new Rect(0,row+23,200,20),state==null?"Waiting for status":state.HasLifeState && !state.Alive?"Spectating":"Playing",muted);
                 GUI.Label(new Rect(210,row+10,65,24),Ping(id));
-                Meter(new Rect(282,row+9,136,24),state?.Health??0,state?.MaxHealth??0,state?.HasVitals==true,new Color(.75f,.24f,.28f));
-                Meter(new Rect(428,row+9,136,24),state?.Fuel??0,state?.MaxFuel??0,state?.HasVitals==true,new Color(.2f,.65f,.85f));
+                Meter(new Rect(282,row+9,136,24),state?.Health??0,state?.MaxHealth??0,state?.HasVitals==true,new Color32(0x2C,0xCF,0x76,255));
+                Meter(new Rect(428,row+9,136,24),state?.Fuel??0,state?.MaxFuel??0,state?.HasVitals==true,new Color32(0xB9,0xB2,0x63,255));
                 if(mod.SessionHost && id!=mod.Connection.LocalPlayerId)
                 {
                     bool enabled=GUI.enabled;GUI.enabled=!pendingKicks.ContainsKey(id);
@@ -221,14 +226,16 @@ namespace Orbit_Us
         }
         private void Meter(Rect rect,float value,float max,bool known,Color tint)
         {
-            Color previous=GUI.color;GUI.color=new Color(.12f,.14f,.17f);GUI.DrawTexture(rect,Texture2D.whiteTexture);
+            Color previous=GUI.color;GUI.color=GameMenuTheme.BorderColor;GUI.DrawTexture(rect,Texture2D.whiteTexture);
+            Rect inner=new Rect(rect.x+1,rect.y+1,rect.width-2,rect.height-2);
+            GUI.color=new Color(.08f,.1f,.12f);GUI.DrawTexture(inner,Texture2D.whiteTexture);
             if(known && max>0)
             {
-                GUI.color=tint;GUI.DrawTexture(new Rect(rect.x,rect.y,rect.width*Mathf.Clamp01(value/max),rect.height),Texture2D.whiteTexture);
+                GUI.color=tint;GUI.DrawTexture(new Rect(inner.x,inner.y,inner.width*Mathf.Clamp01(value/max),inner.height),Texture2D.whiteTexture);
             }
             GUI.color=previous;GUI.Label(rect,known?Mathf.CeilToInt(value)+" / "+Mathf.CeilToInt(max):"—",barText);
         }
-        public void Dispose(){PointerOverPanel=false;pendingKicks.Clear();nextKick.Clear();}
+        public void Dispose(){PointerOverPanel=false;pendingKicks.Clear();nextKick.Clear();GameMenuTheme.Dispose();}
     }
 
     [HarmonyPatch(typeof(startManager),nameof(startManager.StartGameQuick))]

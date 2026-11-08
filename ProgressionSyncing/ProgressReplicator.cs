@@ -16,6 +16,12 @@ namespace Orbit_Us
             public bool HasParent;
         }
         private sealed class BossCredit {public int PlayerId;public float Received;}
+        private sealed class ClientDialogueText
+        {
+            public readonly StoryTextPresentation Upper,Lower=new StoryTextPresentation(backwards:true);
+            public ClientDialogueText(bool timeless){Upper=new StoryTextPresentation(allowInward:timeless);}
+        }
+        private readonly Dictionary<dialogue,ClientDialogueText> dialogueText=new Dictionary<dialogue,ClientDialogueText>();
         private readonly NetworkUDPConnection connection;
         private readonly bool isHost;
         private readonly Dictionary<dataBlob,int> ids = new Dictionary<dataBlob,int>();
@@ -66,6 +72,7 @@ namespace Orbit_Us
             if(current!=story)
             {
                 story=current; player=story!=null?story.player:null; bosses=story!=null?story.bossManager:null;
+                dialogueText.Clear();
                 if(IsClient && story!=null)
                 {
                     story.StopAllCoroutines();
@@ -75,6 +82,8 @@ namespace Orbit_Us
                 uploadCompletion.Clear();bossCredits.Clear();completedBosses.Clear();
             }
             singularity=UnityEngine.Object.FindObjectOfType<singularityManager>(true);
+            if(story!=null && bosses!=null && bosses.bossHealth!=null)
+                BossHealthBarPresentation.Prepare(bosses.bossHealth).ProgressDataBar=story.dataBar;
             warper=UnityEngine.Object.FindObjectOfType<devourerWarper>(true);
             foreach(var blob in Resources.FindObjectsOfTypeAll<dataBlob>())
                 if(blob!=null && !blob.gameObject.scene.IsValid()) prefabs[blob.gameObject.name]=blob.gameObject;
@@ -108,6 +117,7 @@ namespace Orbit_Us
             }
             else
             {
+                UpdateDialogueText();
                 if(latest!=null)
                 {
                     // The late-join state can arrive before planet/enemy snapshots.
@@ -134,6 +144,20 @@ namespace Orbit_Us
                     retryTimer=0;
                     foreach(var action in new List<ProgressAction>(pending.Values)) _=connection.SendProgressAction(action);
                 }
+            }
+        }
+        private void UpdateDialogueText()
+        {
+            foreach(var pair in new List<KeyValuePair<dialogue,ClientDialogueText>>(dialogueText))
+            {
+                var d=pair.Key;
+                if(d==null){dialogueText.Remove(d);continue;}
+                if(!d.gameObject.activeInHierarchy)continue;
+                bool paused=d.timeManager!=null && d.timeManager.isPaused;
+                if(pair.Value.Upper.Step(Time.unscaledTime,paused))
+                {d.message=pair.Value.Upper.Text;if(d.textBox!=null)d.textBox.text=d.message;}
+                if(d is dialogueTimeless timeless && pair.Value.Lower.Step(Time.unscaledTime,paused))
+                {timeless.lowerMessage=pair.Value.Lower.Text;if(timeless.lowerTextBox!=null)timeless.lowerTextBox.text=timeless.lowerMessage;}
             }
         }
         public void StepData(dataBlob blob)
@@ -279,8 +303,10 @@ namespace Orbit_Us
             }
             if(!isHost && packet.Type==PacketType.ProgressActionAck && packet.Data.Length==8 && BitConverter.ToInt32(packet.Data,0)==connection.LocalPlayerId)
                 pending.Remove(BitConverter.ToInt32(packet.Data,4));
-            if(!isHost && packet.Type==PacketType.ProgressSnapshot && snapshots.TryAdd(packet.Data,out ProgressState state))
+            if(!isHost && packet.Type==PacketType.ProgressSnapshot)
             {
+                var state=packet.Decoded as ProgressState;
+                if(state==null && (packet.SnapshotValidated || !snapshots.TryAdd(packet.Data,out state)))return;
                 latest=state;needsApply=true;Refresh();
                 if(story!=null && player!=null) Apply(state);
             }
@@ -454,9 +480,16 @@ namespace Orbit_Us
                 for(int i=0;i<ds.Count && i<state.Dialogues.Count;i++)
                 {
                     var d=ds[i];if(d==null) continue;var v=state.Dialogues[i];
-                    d.StopAllCoroutines();d.gameObject.SetActive(v.Active);d.message=v.Text;d.writing=v.Writing;
-                    if(d.textBox!=null) d.textBox.text=v.Text;
-                    if(d is dialogueTimeless) ((dialogueTimeless)d).lowerTextBox.text=v.LowerText;
+                    d.StopAllCoroutines();d.gameObject.SetActive(v.Active);d.writing=v.Writing;
+                    if(!dialogueText.TryGetValue(d,out ClientDialogueText text))
+                    {text=new ClientDialogueText(d is dialogueTimeless);dialogueText.Add(d,text);}
+                    text.Upper.Observe(v.Text,v.Active,Time.unscaledTime);d.message=text.Upper.Text;
+                    if(d.textBox!=null)d.textBox.text=d.message;
+                    if(d is dialogueTimeless timeless)
+                    {
+                        text.Lower.Observe(v.LowerText,v.Active,Time.unscaledTime);timeless.lowerMessage=text.Lower.Text;
+                        if(timeless.lowerTextBox!=null)timeless.lowerTextBox.text=timeless.lowerMessage;
+                    }
                 }
                 if(previousData<state.Data) audioManager.Instance?.Play("DataCollection");
                 if(state.Warped && state.SingularityEnabled && !wasWarped) {SetupWarp(state);wasWarped=true;}
@@ -526,6 +559,10 @@ namespace Orbit_Us
                 // Capture the authored full size while the UI is still inactive.
                 var presentation=BossHealthBarPresentation.Prepare(bar);
                 bar.gameObject.SetActive(state.BossMaxHP>0 && state.BossHP>0);
+                presentation.ProgressDataBar=story.dataBar;
+                bool showData=state.DataBarActive && !bar.gameObject.activeSelf;
+                if(bar.dataBar!=null)bar.dataBar.SetActive(showData);
+                if(story.dataBar!=null)story.dataBar.SetActive(showData);
                 bar.health=boss!=null?boss.GetComponent<health>():null;
                 if(bar.gameObject.activeSelf)
                 {
@@ -557,7 +594,7 @@ namespace Orbit_Us
             connection.OnPacketReceived-=HandlePacket;
             if(IsClient)endingPresentation.Restore(warper);
             foreach(var p in pieces.Values) if(p.Blob!=null) {p.Blob.gameObject.SetActive(false);UnityEngine.Object.Destroy(p.Blob.gameObject);}
-            pieces.Clear();pending.Clear();
+            pieces.Clear();pending.Clear();dialogueText.Clear();
             motions.Clear();motionReceived.Clear();positions.Clear();uploadCompletion.Clear();bossCredits.Clear();completedBosses.Clear();
             if(staging!=null) UnityEngine.Object.Destroy(staging);
             if(IsClient && story!=null) {story.timeManager.sloMo=false;foreach(var d in Dialogues()) if(d!=null) d.StopYapping();}

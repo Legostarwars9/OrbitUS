@@ -15,6 +15,8 @@ namespace Orbit_Us
         private int sendingTransform;
         private int sendingPlanetSnapshot;
         private int sendingCombat;
+        private int sendingEnemyMotion,sendingPlanetMotion;
+        private readonly GameplaySendBudget bulkBudget=new GameplaySendBudget();
         private int sendingProgressSnapshot, sendingProgressRepair;
         private DateTime lastProgressRepair;
         private int sendingPlanetRepair;
@@ -38,6 +40,7 @@ namespace Orbit_Us
         }
         private readonly Dictionary<int,PlayerTransformData> playerStates=new Dictionary<int,PlayerTransformData>();
         private readonly Dictionary<int,DateTime> stateTimes=new Dictionary<int,DateTime>();
+        private readonly Dictionary<int,DateTime> vitalsTimes=new Dictionary<int,DateTime>();
         private readonly Dictionary<int,int> playerPings=new Dictionary<int,int>();
         private readonly Dictionary<int,DateTime> pingTimes=new Dictionary<int,DateTime>();
         public int HostPlayerId {get;private set;}=-1;
@@ -112,13 +115,16 @@ namespace Orbit_Us
 
             try
             {
-                foreach (byte[] chunk in EnemySnapshotCodec.Encode(enemies, snapshotId))
+                var chunks=await Task.Run(()=>EnemySnapshotCodec.Encode(enemies,snapshotId)).ConfigureAwait(false);
+                foreach (byte[] chunk in chunks)
                 {
                     if (!connected || !ReferenceEquals(socket, udpClient)) return;
                     byte[] data = PacketSerializer.Serialize(new NetworkPacket
                     {
                         Type = PacketType.EnemySnapshot, Data = chunk
                     });
+                    await bulkBudget.Wait(data.Length).ConfigureAwait(false);
+                    if(!connected || !ReferenceEquals(socket,udpClient))return;
                     await socket.SendAsync(data, data.Length).ConfigureAwait(false);
                 }
             }
@@ -145,10 +151,9 @@ namespace Orbit_Us
                     {
                         Type = PacketType.PlanetSnapshot, Data = chunks[i]
                     });
+                    await bulkBudget.Wait(data.Length).ConfigureAwait(false);
+                    if(!connected || !ReferenceEquals(socket,udpClient))return;
                     await socket.SendAsync(data, data.Length).ConfigureAwait(false);
-                    // Bound large-world bursts to roughly 200 datagrams/sec.
-                    if ((i + 1) % 16 == 0 && i + 1 < chunks.Count)
-                        await Task.Delay(80).ConfigureAwait(false);
                 }
             }
             catch (Exception ex) { Console.WriteLine($"UDP planet snapshot send failed: {ex.Message}"); }
@@ -209,8 +214,9 @@ namespace Orbit_Us
                 {
                     if(!connected || !ReferenceEquals(socket,udpClient))return;
                     byte[] bytes=PacketSerializer.Serialize(new NetworkPacket {Type=PacketType.CombatSnapshot,Data=chunks[i]});
+                    await bulkBudget.Wait(bytes.Length).ConfigureAwait(false);
+                    if(!connected || !ReferenceEquals(socket,udpClient))return;
                     await socket.SendAsync(bytes,bytes.Length).ConfigureAwait(false);
-                    if((i+1)%16==0 && i+1<chunks.Count) await Task.Delay(80).ConfigureAwait(false);
                 }
             }
             catch(Exception ex){Console.WriteLine("Combat send failed: "+ex.Message);}
@@ -236,10 +242,9 @@ namespace Orbit_Us
                     {
                         Type = PacketType.ProgressSnapshot, Data = chunks[i]
                     });
+                    await bulkBudget.Wait(data.Length).ConfigureAwait(false);
+                    if(!connected || !ReferenceEquals(socket,udpClient))return;
                     await socket.SendAsync(data, data.Length).ConfigureAwait(false);
-                    // Bound large-world bursts to roughly 200 datagrams/sec.
-                    if ((i + 1) % 16 == 0 && i + 1 < chunks.Count)
-                        await Task.Delay(80).ConfigureAwait(false);
                 }
             }
             catch (Exception ex) { Console.WriteLine($"UDP progress snapshot send failed: {ex.Message}"); }
@@ -353,6 +358,26 @@ namespace Orbit_Us
             =>SendMovement(new PlayerTransformData {X=x,Y=y,Rotation=rotation,VX=vx,VY=vy,HasVelocity=true});
         public Task SendPlayerState(float x,float y,float rotation,float vx,float vy,bool alive)
             =>SendMovement(new PlayerTransformData {X=x,Y=y,Rotation=rotation,VX=vx,VY=vy,HasVelocity=true,HasLifeState=true,Alive=alive});
+        public Task SendPlayerState(PlayerTransformData state)=>SendMovement(state);
+        public async Task SendWorldMotion(WorldMotionBatch batch)
+        {
+            var socket=udpClient;
+            if(!connected || socket==null || !HostConnection || batch.Entities.Count==0)return;
+            int busy=batch.Planets?Interlocked.CompareExchange(ref sendingPlanetMotion,1,0):Interlocked.CompareExchange(ref sendingEnemyMotion,1,0);
+            if(busy!=0)return;
+            try
+            {
+                var packets=await Task.Run(()=>WorldMotionCodec.Encode(batch)).ConfigureAwait(false);
+                foreach(var payload in packets)
+                {
+                    if(!connected || !ReferenceEquals(socket,udpClient))return;
+                    byte[] bytes=PacketSerializer.Serialize(new NetworkPacket {Type=batch.Planets?PacketType.PlanetMotion:PacketType.EnemyMotion,Data=payload});
+                    await socket.SendAsync(bytes,bytes.Length).ConfigureAwait(false);
+                }
+            }
+            catch(Exception ex){if(connected && ReferenceEquals(socket,udpClient))Console.WriteLine("UDP motion send failed: "+ex.Message);}
+            finally{if(batch.Planets)Interlocked.Exchange(ref sendingPlanetMotion,0);else Interlocked.Exchange(ref sendingEnemyMotion,0);}
+        }
         public Task SendPlayerVitals(float x,float y,float rotation,float vx,float vy,bool alive,float health,float maxHealth,float fuel,float maxFuel)
             =>SendMovement(new PlayerTransformData {X=x,Y=y,Rotation=rotation,VX=vx,VY=vy,HasVelocity=true,HasLifeState=true,Alive=alive,
                 HasVitals=true,Health=health,MaxHealth=maxHealth,Fuel=fuel,MaxFuel=maxFuel});
@@ -366,11 +391,13 @@ namespace Orbit_Us
             {
                 transform.PlayerId=LocalPlayerId;transform.Sequence=++transformSequence;
                 transform.IsHost=HostConnection;
-                playerStates[LocalPlayerId]=transform;stateTimes[LocalPlayerId]=DateTime.UtcNow;
+                if(!transform.HasSampleTime){transform.HasSampleTime=true;transform.SampleTime=NetworkTime.Now;}
+                if(!HostConnection || !transform.HasLifeState || transform.Alive)transform.SpectatingPlayerId=0;
                 byte[] data = PacketSerializer.Serialize(new NetworkPacket
                 {
                     Type = PacketType.PlayerTransform, Data = transform.Serialize()
                 });
+                CachePlayerState(transform);
                 await socket.SendAsync(data, data.Length).ConfigureAwait(false);
             }
             catch (Exception ex) { Console.WriteLine($"UDP transform send failed: {ex.Message}"); }
@@ -388,7 +415,7 @@ namespace Orbit_Us
                     if (connected && ReferenceEquals(socket, udpClient))
                     {
                         Interlocked.Exchange(ref lastServerPacketTicks, DateTime.UtcNow.Ticks);
-                        inbox.Add(packet);
+                        packet.ReceivedAt=NetworkTime.Now;inbox.Add(packet);
                     }
                 }
                 catch (ObjectDisposedException) { break; }
@@ -518,11 +545,23 @@ namespace Orbit_Us
                     if (id != LocalPlayerId) remotePlayers.Add(id);
                 }
                 if(packet.Type==PacketType.PlayerTransform && PlayerTransformData.TryDeserialize(packet.Data,out PlayerTransformData state))
-                {playerStates[state.PlayerId]=state;stateTimes[state.PlayerId]=DateTime.UtcNow;}
+                {CachePlayerState(state);}
                 DeliverPacket(packet);
             }
         }
 
+        private void CachePlayerState(PlayerTransformData state)
+        {
+            DateTime now=DateTime.UtcNow;
+            if(state.HasVitals)vitalsTimes[state.PlayerId]=now;
+            else if(vitalsTimes.TryGetValue(state.PlayerId,out DateTime at) && (now-at).TotalSeconds<3 &&
+                playerStates.TryGetValue(state.PlayerId,out PlayerTransformData previous) && previous.HasVitals)
+            {
+                state.HasVitals=true;state.Health=state.HasLifeState && !state.Alive?0:previous.Health;
+                state.MaxHealth=previous.MaxHealth;state.Fuel=previous.Fuel;state.MaxFuel=previous.MaxFuel;
+            }
+            playerStates[state.PlayerId]=state;stateTimes[state.PlayerId]=now;
+        }
         private void DeliverPacket(NetworkPacket packet)
         {
             try { OnPacketReceived?.Invoke(packet); }
@@ -534,7 +573,7 @@ namespace Orbit_Us
             if (id == LocalPlayerId || !departedPlayers.Add(id)) return;
             remotePlayers.Remove(id);
             playerNames.Remove(id);
-            playerStates.Remove(id);stateTimes.Remove(id);playerPings.Remove(id);pingTimes.Remove(id);
+            playerStates.Remove(id);stateTimes.Remove(id);vitalsTimes.Remove(id);playerPings.Remove(id);pingTimes.Remove(id);
             DeliverPacket(new NetworkPacket { Type = PacketType.PlayerDisconnected, Data = BitConverter.GetBytes(id) });
         }
 
@@ -555,7 +594,7 @@ namespace Orbit_Us
             departedPlayers.Clear();
             rosterRevision = 0;
             activeRoster = null;
-            playerStates.Clear();stateTimes.Clear();playerPings.Clear();pingTimes.Clear();
+            playerStates.Clear();stateTimes.Clear();vitalsTimes.Clear();playerPings.Clear();pingTimes.Clear();
             HostPlayerId=-1;LobbyStarted=false;
             lastHeartbeat = default(DateTime);
             lastPlanetRepair = default(DateTime);
