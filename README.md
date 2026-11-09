@@ -22,7 +22,7 @@ It is for the game Orbitous on Steam: https://store.steampowered.com/app/3830300
 <h3><b>4. Start Playing</b></h3>
    To start the multiplayer server set the ip address in the config file to be the ip address, domain, or tailscale domain/ip of the host. When in-game, press the quick play button and have the HOST press F6, then have all clients quick play and press F7<br><br>
 
-Currently, players, enemies, and planets are synced, progression and other qol gameplay features will be added eventually (to test out the progression syncing compile the mod from source) This will be changed in the future! <br><br>
+While ingame press the ~ key to open the player menu. <br><br>
 
 <b>Planned Features:<b> https://trello.com/b/NTNavEf7/orbitus-planned-features
 
