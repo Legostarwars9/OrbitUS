@@ -98,6 +98,10 @@ namespace Orbit_Us
         public static void Prefix(projectile __instance)
         {
             if(!OrbitUs.IsHost || __instance.playerSafe || CombatReplicator.Instance==null)return;
+            // Retain a living target for this shot. Re-selecting the nearest pilot
+            // every frame can turn a projectile away just before impact.
+            if(CombatReplicator.Instance.Pilots.IsLivingTarget(__instance.homingTargetRb) &&
+                __instance.homingTarget==__instance.homingTargetRb.transform)return;
             var target=CombatReplicator.Instance.Pilots.Nearest(__instance.transform.position);
             __instance.homingTarget=target!=null?target.transform:null;__instance.homingTargetRb=target;
         }

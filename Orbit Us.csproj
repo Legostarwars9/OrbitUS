@@ -52,6 +52,7 @@
         <Compile Include="CombatSyncing\CombatSnapshotCodec.cs" />
         <Compile Include="CombatSyncing\CombatReplicator.cs" />
         <Compile Include="CombatSyncing\NetworkPilotRegistry.cs" />
+        <Compile Include="CombatSyncing\PilotMotionState.cs" />
         <Compile Include="CombatSyncing\CombatSyncPatches.cs" />
         <Compile Include="ProgressionSyncing\ProgressState.cs" />
         <Compile Include="ProgressionSyncing\ProgressSnapshotCodec.cs" />

@@ -12,10 +12,8 @@ namespace Orbit_Us
         {
             public GameObject Object;
             public Rigidbody2D Body;
-            public Vector2 Position,Velocity;
-            public float Received;
-            public bool Alive;
-            public bool MotionLife;
+            public CircleCollider2D Collider;
+            public readonly PilotMotionState Motion=new PilotMotionState();
         }
         private readonly Dictionary<int,Pilot> pilots=new Dictionary<int,Pilot>();
         private readonly Dictionary<Type,FieldInfo[]> fields=new Dictionary<Type,FieldInfo[]>();
@@ -23,18 +21,16 @@ namespace Orbit_Us
         private readonly NetworkUDPConnection connection;
         public NetworkPilotRegistry(NetworkUDPConnection connection,bool host){this.connection=connection;this.host=host;}
         public void Motion(PlayerTransformData t)
+            =>Motion(t,NetworkTime.Now);
+        public void Motion(PlayerTransformData t,double arrival)
         {
             if(!host || t.PlayerId==connection.LocalPlayerId)return;
-            var p=Get(t.PlayerId);
-            if(t.HasLifeState){p.Alive=t.Alive;p.MotionLife=true;}
-            float elapsed=Time.unscaledTime-p.Received;
-            p.Velocity=elapsed>0.005f && elapsed<1f?Vector2.ClampMagnitude((new Vector2(t.X,t.Y)-p.Position)/elapsed,500f):Vector2.zero;
-            p.Position=new Vector2(t.X,t.Y);p.Received=Time.unscaledTime;
+            Get(t.PlayerId).Motion.Observe(t,arrival);
         }
         public void Presence(int id,bool alive)
-        {if(host && id!=connection.LocalPlayerId){var pilot=Get(id);if(!pilot.MotionLife)pilot.Alive=alive;}}
+        {if(host && id!=connection.LocalPlayerId)Get(id).Motion.Presence(alive);}
         public bool IsLiving(int id)
-            =>pilots.TryGetValue(id,out Pilot p) && p.Alive && p.Object!=null && Time.unscaledTime-p.Received<3f;
+            =>pilots.TryGetValue(id,out Pilot p) && p.Motion.IsLiving(NetworkTime.Now) && p.Object!=null;
         private Pilot Get(int id)
         {
             if(pilots.TryGetValue(id,out Pilot existing))
@@ -46,19 +42,33 @@ namespace Orbit_Us
             collider.radius=player.Instance!=null?Mathf.Max(0.5f,player.Instance.transform.lossyScale.x/2):0.5f;
             collider.enabled=false;
             var proxy=obj.AddComponent<NetworkPilotProxy>();proxy.PlayerId=id;
-            var p=new Pilot {Object=obj,Body=body,Received=float.NegativeInfinity};pilots.Add(id,p);return p;
+            var p=new Pilot {Object=obj,Body=body,Collider=collider};pilots.Add(id,p);return p;
         }
         public void Update()
         {
-            foreach(var p in pilots.Values)
+            double now=NetworkTime.Now;
+            foreach(var pair in pilots)
             {
+                var p=pair.Value;
                 if(p.Object==null || p.Body==null)continue;
-                bool active=p.Alive && Time.unscaledTime-p.Received<3f;
+                bool active=p.Motion.IsLiving(now);
                 p.Object.SetActive(active);
-                p.Object.GetComponent<CircleCollider2D>().enabled=active;
-                p.Body.position=p.Position+p.Velocity*Mathf.Clamp(Time.unscaledTime-p.Received,0,0.15f);
-                p.Body.velocity=p.Velocity;
+                p.Collider.enabled=active;
+                MotionPose pose=p.Motion.Predict(now,Time.timeScale);
+                // Aim and damage share the same position the host actually sees.
+                // Presentation smoothing must never leave a separate hitbox ahead.
+                p.Body.position=PlayerReplicator.Instance!=null && PlayerReplicator.Instance.TryGetRemotePosition(pair.Key,out Vector3 visible)
+                    ?(Vector2)visible:new Vector2(pose.X,pose.Y);
+                p.Body.velocity=active?new Vector2(pose.VX,pose.VY):Vector2.zero;
             }
+        }
+        public bool IsLivingTarget(Rigidbody2D body)
+        {
+            if(body==null)return false;
+            var local=player.Instance;
+            if(local!=null && body==local.rb)return !local.dead && local.gameObject.activeInHierarchy;
+            foreach(var pair in pilots)if(pair.Value.Body==body)return IsLiving(pair.Key);
+            return false;
         }
         public Rigidbody2D Nearest(Vector2 position)
         {
@@ -68,8 +78,8 @@ namespace Orbit_Us
             {best=local.rb;distance=((Vector2)local.transform.position-position).sqrMagnitude;bestId=connection.LocalPlayerId;}
             foreach(var pair in pilots)
             {
-                var p=pair.Value;if(p.Body==null || !p.Alive || Time.unscaledTime-p.Received>=3f)continue;
-                float candidate=(p.Position-position).sqrMagnitude;
+                var p=pair.Value;if(p.Body==null || !p.Motion.IsLiving(NetworkTime.Now))continue;
+                float candidate=(p.Body.position-position).sqrMagnitude;
                 if(CombatRules.Prefer(candidate,pair.Key,distance,bestId))
                 {best=p.Body;distance=candidate;bestId=pair.Key;}
             }

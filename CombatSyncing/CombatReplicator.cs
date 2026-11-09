@@ -149,7 +149,7 @@ namespace Orbit_Us
                 {
                     if((r.Ending && Time.unscaledTime-r.Received>0.08f) || Time.unscaledTime-r.Received>2f)
                     {if(r.Ending)claimed.Add(pair.Key);RemoveReplica(pair.Key);continue;}
-                    if(r.Motion.Evaluate(NetworkTime.Now-.05,out MotionPose pose))
+                    if(r.Motion.Evaluate(NetworkTime.Now,out MotionPose pose))
                     {r.Object.transform.position=new Vector3(pose.X,pose.Y,0);r.Object.transform.rotation=Quaternion.Euler(0,0,pose.Rotation);}
                 }
             }
@@ -233,7 +233,7 @@ namespace Orbit_Us
             if(!initialized)return;
             if(packet.Type==PacketType.PlayerTransform)
             {
-                var motion=PlayerTransformData.Deserialize(packet.Data);Pilots.Motion(motion);
+                var motion=PlayerTransformData.Deserialize(packet.Data);Pilots.Motion(motion,packet.ReceivedAt>0?packet.ReceivedAt:NetworkTime.Now);
                 if(host && motion.HasLifeState && !motion.Alive)
                 {
                     hitTotals.Remove(motion.PlayerId);

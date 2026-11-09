@@ -363,7 +363,7 @@ namespace Orbit_Us
                 }
 
                 if(playerMotion.TryGetValue(playerId,out MotionInterpolation motion) &&
-                    motion.Evaluate(playerClocks[playerId].SourceTime(NetworkTime.Now)-.05,out MotionPose pose))
+                    motion.Evaluate(playerClocks[playerId].SourceTime(NetworkTime.Now)-(connection.HostConnection?0:.05),out MotionPose pose))
                 {
                     player.transform.position=new Vector3(pose.X,pose.Y,player.transform.position.z);
                     player.transform.rotation=Quaternion.Euler(0,0,pose.Rotation);
